@@ -209,10 +209,13 @@ ai_backend/
 │   │   ├── rate_limiter.py
 │   │   ├── error_handler.py
 │   │   └── __init__.py
+│   ├── models/
+│   │   ├── schemas.py   # All your Pydantic models go here
+│   │   └── __init__.py
 │   ├── routes/
-│   │   ├── ai_routes.py
-│   │   ├── voice_routes.py
-│   │   ├── healthcheck.py
+│   │   ├── ai_routes_handlers.py
+│   │   ├── voice_routes_handlers.py
+│   │   ├── healthcheck_handlers.py
 │   │   └── __init__.py
 │   ├── services/
 │   │   ├── storage/
