@@ -1,0 +1,140 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual environment
+env/
+venv/
+.venv/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+coverage/
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.coveragerc
+*.pylint.d
+*.tox/
+.cache/
+htmlcov/
+.tox/
+
+# AWS credentials
+*.pem
+*.key
+*.csr
+credentials/
+.aws/
+
+# Database files
+*.sqlite3
+*.db
+*.pgdata
+
+# Logs
+logs/
+*.log
+
+# S3 or large binary files
+*.mp3
+*.wav
+*.mp4
+*.ogg
+*.flac
+transcripts/
+audio/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Docker
+Dockerfile
+docker-compose.yml
+*.env
+.env.*
+
+# IDE specific files
+.idea/
+.vscode/
+*.code-workspace
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated API docs
+docs/build/
+docs/_build/
+
+# Node dependencies (if applicable)
+node_modules/
+
+# Python egg caches
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Cache files
+*.cache
+*.temp
+*.tmp
+
+# FastAPI-related artifacts
+openapi.json
+.openapi-schema.json
+
+# Terraform and CloudFormation state files
+*.tfstate
+*.tfstate.backup
+
+# Environment variable files
+.env
+.env.local
+.env.production
+.env.development
+
+# Compiled or build artifacts
+*.out
+*.o
+*.a
+*.d
+
+# QLoRA or model artifacts
+models/
+*.bin
+*.pt
+*.ckpt
+*.h5
+*.onnx

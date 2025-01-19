@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+boto3
+sqlalchemy
+psycopg2
+pinecone-client
+openai
+transformers
+peft
+datasets
+bitsandbytes
