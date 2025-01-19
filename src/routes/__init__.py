@@ -1,6 +1,12 @@
 # src/routes/__init__.py
+from fastapi import APIRouter
 
-# Export routers for easier access
-from .ai_routes import router as ai_router
-from .voice_routes import router as voice_router
-from .healthcheck import router as health_router
+# Initialize routers
+ai_routes = APIRouter()
+voice_routes = APIRouter()
+healthcheck = APIRouter()
+
+# Import route definitions
+from . import ai_routes_handlers
+from . import voice_routes_handlers
+from . import healthcheck_handlers
