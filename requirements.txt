@@ -9,3 +9,4 @@ transformers
 peft
 datasets
 bitsandbytes
+python-dotenv
