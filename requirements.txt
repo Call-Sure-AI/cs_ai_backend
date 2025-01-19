@@ -1,12 +1,55 @@
+# FastAPI and ASGI server
 fastapi
-uvicorn
+uvicorn[standard]
+
+# AWS S3 integration
 boto3
+aioboto3
+
+# Database
 sqlalchemy
-psycopg2
+psycopg2-binary
+asyncpg  # For async database connections
+
+# Pinecone for vector databases
 pinecone-client
+
+# OpenAI GPT API and LLM utilities
 openai
 transformers
+
+# Fine-tuning and dataset handling
 peft
 datasets
-bitsandbytes
+bitsandbytes  # For efficient memory usage
+
+# Environment variable management
 python-dotenv
+
+# Logging and Observability
+loguru
+opentelemetry-api
+opentelemetry-sdk
+
+# Async HTTP requests
+httpx
+aiohttp
+
+# Testing and Mocking
+pytest
+pytest-asyncio
+pytest-mock
+
+# Authentication and Security
+pyjwt
+
+# Redis Caching and Rate Limiting
+redis
+
+# Token Handling for OpenAI
+tiktoken
+
+# Development Tools
+black
+isort
+flake8

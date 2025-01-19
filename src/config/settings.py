@@ -13,8 +13,10 @@ S3_REGION = os.getenv("S3_REGION")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-# GPT API Configuration
+# OpenAI API Configuration
 GPT_API_KEY = os.getenv("GPT_API_KEY")
+DEFAULT_GPT_MODEL = os.getenv("DEFAULT_GPT_MODEL", "gpt-4o")  # Default GPT model
+DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small")  # Default embedding model
 
 # Application Settings
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1")
