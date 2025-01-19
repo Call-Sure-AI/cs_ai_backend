@@ -23,6 +23,7 @@ Benefits of Using aioboto3
 """
 
 import aioboto3
+from botocore.exceptions import NoCredentialsError
 from src.config.settings import S3_BUCKET_NAME, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 
@@ -40,7 +41,38 @@ async def upload_file_to_s3(file_path: str, key: str) -> str:
             await s3_client.upload_file(file_path, S3_BUCKET_NAME, key)
             return f"https://{S3_BUCKET_NAME}.s3.{S3_REGION}.amazonaws.com/{key}"
         except Exception as e:
-            raise Exception(f"Error uploading to S3: {e}")
+            raise RuntimeError(f"Error uploading to S3: {e}") from e
+
+async def async_upload_to_s3(bucket: str, key: str, content: bytes, content_type: str = "application/json") -> None:
+    """
+    Asynchronously upload content to S3.
+    
+    Args:
+        bucket (str): S3 bucket name.
+        key (str): S3 object key.
+        content (bytes): File content.
+        content_type (str): Content type of the uploaded object.
+    
+    Returns:
+        None
+    """
+    session = aioboto3.Session(
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=S3_REGION,
+    )
+    async with session.client("s3") as s3_client:
+        try:
+            await s3_client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=content,
+                ContentType=content_type
+            )
+        except NoCredentialsError as exc:
+            raise RuntimeError("AWS credentials not available.") from exc
+        except Exception as e:
+            raise RuntimeError(f"Failed to upload to S3: {e}") from e
 
 
 async def download_file_from_s3(key: str, destination_path: str) -> None:
@@ -56,7 +88,7 @@ async def download_file_from_s3(key: str, destination_path: str) -> None:
         try:
             await s3_client.download_file(S3_BUCKET_NAME, key, destination_path)
         except Exception as e:
-            raise Exception(f"Error downloading from S3: {e}")
+            raise RuntimeError(f"Error downloading from S3: {e}") from e
 
 
 async def list_files_in_s3(prefix: str = "") -> list:
@@ -75,5 +107,4 @@ async def list_files_in_s3(prefix: str = "") -> list:
                 return [content["Key"] for content in response["Contents"]]
             return []
         except Exception as e:
-            raise Exception(f"Error listing files in S3: {e}")
-
+            raise RuntimeError(f"Error listing files in S3: {e}") from e

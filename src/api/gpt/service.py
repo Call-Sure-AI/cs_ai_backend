@@ -1,6 +1,14 @@
 from openai import AsyncOpenAI
 from typing import AsyncGenerator, List
 from src.config.settings import GPT_API_KEY, DEFAULT_GPT_MODEL, DEFAULT_EMBEDDING_MODEL
+from src.api.gpt.utils import (
+    validate_gpt_message_format,
+    construct_gpt_developer_message,
+    construct_gpt_user_message,
+    construct_gpt_assistant_message,
+    log_and_upload_to_s3,
+    split_text_into_chunks,
+)
 import logging
 
 # Initialize OpenAI client
@@ -37,6 +45,9 @@ async def stream_text_response(messages: List[dict], model: str = DEFAULT_GPT_MO
         async for chunk in stream_text_response(messages):
             print(chunk)
     """
+    if not validate_gpt_message_format(messages):
+        raise ValueError("Invalid GPT message format.")
+
     try:
         stream = await async_client.chat.completions.create(
             model=model,
@@ -49,7 +60,7 @@ async def stream_text_response(messages: List[dict], model: str = DEFAULT_GPT_MO
             if "choices" in chunk and chunk.choices[0].delta.content is not None:
                 yield chunk.choices[0].delta.content
     except Exception as e:
-        logging.error("Error during GPT streaming: %s", str(e))
+        logging.error(f"Error during GPT streaming: {e}")
         raise RuntimeError(f"Error during GPT streaming: {e}") from e
 
 
@@ -85,6 +96,9 @@ async def generate_full_response(messages: List[dict], model: str = DEFAULT_GPT_
         response = await generate_full_response(messages)
         print(response)
     """
+    if not validate_gpt_message_format(messages):
+        raise ValueError("Invalid GPT message format.")
+
     try:
         response = await async_client.chat.completions.create(
             model=model,
@@ -94,7 +108,7 @@ async def generate_full_response(messages: List[dict], model: str = DEFAULT_GPT_
         )
         return response.choices[0].message["content"].strip()
     except Exception as e:
-        logging.error("Error generating full GPT response: %s", str(e))
+        logging.error(f"Error generating full GPT response: {e}")
         raise RuntimeError(f"Error generating full GPT response: {e}") from e
 
 
