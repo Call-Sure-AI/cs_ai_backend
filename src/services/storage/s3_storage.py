@@ -24,7 +24,7 @@ Benefits of Using aioboto3
 
 import aioboto3
 from botocore.exceptions import NoCredentialsError
-from src.config.settings import S3_BUCKET_NAME, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+from config.settings import S3_BUCKET_NAME, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 
 async def upload_file_to_s3(file_path: str, key: str) -> str:
