@@ -53,3 +53,18 @@ tiktoken
 black
 isort
 flake8
+
+# WebRTC and Real-time Communication
+aiortc==1.5.0  # WebRTC implementation
+websockets==11.0.3  # WebSocket support
+av==10.0.0  # Required for aiortc media handling
+cryptography==41.0.5  # Required for secure WebRTC connections
+pyee==11.0.1  # Event emitter for WebRTC events
+aiodns==3.1.1  # Async DNS resolution
+python-multipart==0.0.6  # For handling file uploads
+google-crc32c==1.5.0  # For data integrity checks
+
+# Optional WebRTC Media Extensions
+numpy>=1.24.0  # For media processing
+opencv-python-headless>=4.8.0  # For video processing (if needed)
+sounddevice>=0.4.6  # For audio processing (if needed)

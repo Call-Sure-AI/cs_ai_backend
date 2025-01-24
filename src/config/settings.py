@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 from typing import Dict, Any, List, Set
 
@@ -46,9 +47,22 @@ ENV_VARS = {
    "ENABLE_RATE_LIMITING": {"default": "true", "type": lambda x: x.lower() == "true"},
    
    # CORS
-   "ALLOWED_ORIGINS": {"default": "*", "type": lambda x: x.split(",")}
+   "ALLOWED_ORIGINS": {"default": "*", "type": lambda x: x.split(",")},
+   
+   # WebRTC Settings
+   "WEBRTC_ICE_SERVERS": {
+       "default": '[{"urls": ["stun:stun.l.google.com:19302"]}]',
+       "type": json.loads,
+       "validator": lambda x: isinstance(x, list) and all(isinstance(s, dict) for s in x)
+   },
+   "WEBRTC_MAX_MESSAGE_SIZE": {"default": "1048576", "type": int},  # 1MB
+   "WEBRTC_HEARTBEAT_INTERVAL": {"default": "30", "type": int},  # seconds
+   "WEBRTC_CONNECTION_TIMEOUT": {"default": "300", "type": int},  # seconds
+   "WEBRTC_MAX_CONNECTIONS_PER_COMPANY": {"default": "100", "type": int},
+   "ENABLE_WEBRTC": {"default": "true", "type": lambda x: x.lower() == "true"},
 }
 
+# Rest of your existing code remains unchanged
 def reload_environment() -> None:
    """Reload all environment variables from .env file"""
    # First unload current env vars
@@ -138,3 +152,21 @@ __all__ = list(ENV_VARS.keys()) + [
     'get_config_dict',
     'generate_env_template'
 ]
+
+"""
+Added new WebRTC-specific environment variables:
+
+WEBRTC_ICE_SERVERS: JSON string for ICE server configuration
+WEBRTC_MAX_MESSAGE_SIZE: Maximum WebSocket message size
+WEBRTC_HEARTBEAT_INTERVAL: Interval for connection heartbeats
+WEBRTC_CONNECTION_TIMEOUT: Connection timeout duration
+WEBRTC_MAX_CONNECTIONS_PER_COMPANY: Connection limit per company
+ENABLE_WEBRTC: Feature flag for WebRTC functionality
+
+
+Added proper type conversion and validation:
+
+JSON parsing for ICE servers configuration
+Integer conversion for numeric values
+Validation for ICE servers format
+"""
