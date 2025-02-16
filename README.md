@@ -193,8 +193,10 @@ ai_backend/
 │   │   │   ├── gpt_realtime.py
 │   │   │   └── utils.py
 │   │   ├── stt/
-│   │   │   ├── deepgram.py
-│   │   │   └── utils.py
+│   │   │   ├── deepgram_service.py
+│   │   │   ├── deepgram_test_service.py
+│   │   │   ├── utils.py
+│   │   │   └── __init__.py
 │   │   └── __init__.py
 │   ├── config/
 │   │   ├── settings.py

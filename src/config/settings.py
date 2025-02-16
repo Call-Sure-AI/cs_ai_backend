@@ -60,6 +60,101 @@ ENV_VARS = {
    "WEBRTC_CONNECTION_TIMEOUT": {"default": "300", "type": int},  # seconds
    "WEBRTC_MAX_CONNECTIONS_PER_COMPANY": {"default": "100", "type": int},
    "ENABLE_WEBRTC": {"default": "true", "type": lambda x: x.lower() == "true"},
+
+    "DEEPGRAM_API_KEY": {"required": True},
+
+    # ElevenLabs Configuration
+    "ELEVEN_LABS_API_KEY": {"required": True},
+    "VOICE_ID": {"required": True},
+    
+    # Audio Service Configuration
+    "AUDIO_CHUNK_SIZE": {"default": "32768", "type": int},  # 32KB
+    "AUDIO_MAX_TEXT_LENGTH": {"default": "500", "type": int},
+    "AUDIO_CACHE_TTL": {"default": "3600", "type": int},  # 1 hour
+    "AUDIO_CHUNK_DELAY": {"default": "0.01", "type": float},  # 10ms
+
+    # Document Processing
+    "DOCUMENT_BATCH_SIZE": {"default": "1000", "type": int},
+    "MAX_DOCUMENT_SIZE": {"default": "10485760", "type": int},  # 10MB
+    "SUPPORTED_DOCUMENT_TYPES": {
+        "default": ".txt,.pdf,.docx,.doc,.html,.md,.json,.csv,.xlsx",
+        "type": lambda x: set(x.split(','))
+    },
+    
+    # Database Connections
+    "DEFAULT_DB_BATCH_SIZE": {"default": "1000", "type": int},
+    "DB_CONNECTION_TIMEOUT": {"default": "30", "type": int},  # seconds
+    "ENABLE_DB_CONNECTION_POOLING": {"default": "true", "type": lambda x: x.lower() == "true"},
+
+    # Qdrant Configuration
+    "QDRANT_HOST": {"default": "localhost"},
+    "QDRANT_PORT": {"default": "6333", "type": int},
+    "QDRANT_API_KEY": {"required": True},
+    "QDRANT_HTTPS": {"default": "false", "type": lambda x: x.lower() == "true"},
+    "EMBEDDINGS_DIR": {"default": "./embeddings"},
+    "VECTOR_DIMENSION": {"default": "1536", "type": int},
+    "SEARCH_SCORE_THRESHOLD": {"default": "0.1", "type": float},
+    "BATCH_SIZE": {"default": "100", "type": int},
+
+    # OpenAI Configuration
+    "OPENAI_API_KEY": {"required": True},
+    "OPENAI_MODEL": {"default": "gpt-4-turbo-preview"},
+    
+    # RAG Configuration
+    "CHUNK_SIZE": {"default": "500", "type": int},
+    "CHUNK_OVERLAP": {"default": "50", "type": int},
+    "RETRIEVAL_K": {"default": "3", "type": int},
+    "SCORE_THRESHOLD": {"default": "0.2", "type": float},
+    "MAX_TOKENS": {"default": "4000", "type": int},
+    
+    # Model Configuration
+    "EMBEDDING_MODEL": {"default": "text-embedding-3-small"},
+    "TEMPERATURE": {"default": "0.1", "type": float},
+
+    # Vector Store Configuration
+    "VECTOR_STORE_PATH": {"default": "./vector_store", "type": str},
+    "OPENAI_EMBEDDING_MODEL": {"default": "text-embedding-3-small"},
+    "DEFAULT_CONFIDENCE_THRESHOLD": {"default": "0.7", "type": float},
+    
+    # Caching Configuration
+    "EMBEDDING_CACHE_SIZE": {"default": "2000", "type": int},
+    "EMBEDDING_CACHE_TTL": {"default": "3600", "type": int},  # 1 hour
+    "EMBEDDING_BATCH_SIZE": {"default": "5", "type": int},
+    "MAX_CONCURRENT_EMBEDDINGS": {"default": "5", "type": int},
+
+    # Calendar Service Configuration
+    "GOOGLE_SERVICE_ACCOUNT_FILE": {"required": True},
+    "GOOGLE_CALENDAR_ID": {"required": True},
+    "MICROSOFT_CLIENT_ID": {"required": True},
+    "MICROSOFT_CLIENT_SECRET": {"required": False},  # Not needed for public auth flow
+    "CALENDLY_TOKEN": {"required": False},
+    
+    # Calendar Defaults
+    "DEFAULT_TIMEZONE": {"default": "UTC"},
+    "CALENDAR_TOKEN_STORE_PATH": {"default": "~/.calendar_tokens"},
+    "CALENDAR_BUFFER_MINUTES": {"default": "5", "type": int},
+    "MIN_APPOINTMENT_DURATION": {"default": "30", "type": int},
+    "MAX_APPOINTMENT_DURATION": {"default": "120", "type": int},
+    
+    # Working Hours (JSON string)
+    "WORKING_HOURS": {
+        "default": json.dumps({
+            'monday': {'start': '09:00', 'end': '17:00'},
+            'tuesday': {'start': '09:00', 'end': '17:00'},
+            'wednesday': {'start': '09:00', 'end': '17:00'},
+            'thursday': {'start': '09:00', 'end': '17:00'},
+            'friday': {'start': '09:00', 'end': '17:00'}
+        }),
+        "type": json.loads
+    },
+    
+    # Cache Settings
+    "CALENDAR_CACHE_TTL": {"default": "3600", "type": int},  # 1 hour
+    "CALENDAR_CACHE_SIZE": {"default": "1000", "type": int},
+    
+    # Rate Limiting
+    "CALENDAR_RATE_LIMIT_PER_MINUTE": {"default": "60", "type": int},
+    "CALENDAR_MAX_CONCURRENT_OPERATIONS": {"default": "5", "type": int},
 }
 
 # Rest of your existing code remains unchanged
@@ -169,4 +264,27 @@ Added proper type conversion and validation:
 JSON parsing for ICE servers configuration
 Integer conversion for numeric values
 Validation for ICE servers format
+
+Calendar Integration Settings:
+
+1. Service Authentication:
+   - GOOGLE_SERVICE_ACCOUNT_FILE: Path to Google service account JSON
+   - GOOGLE_CALENDAR_ID: Google Calendar ID
+   - MICROSOFT_CLIENT_ID: Microsoft OAuth client ID
+   - MICROSOFT_CLIENT_SECRET: Optional for public auth flow
+   - CALENDLY_TOKEN: Optional Calendly API token
+
+2. Calendar Operation Settings:
+   - DEFAULT_TIMEZONE: Default timezone for calendar operations
+   - CALENDAR_TOKEN_STORE_PATH: Path to store authentication tokens
+   - CALENDAR_BUFFER_MINUTES: Buffer time between appointments
+   - MIN_APPOINTMENT_DURATION: Minimum duration for appointments
+   - MAX_APPOINTMENT_DURATION: Maximum duration for appointments
+   - WORKING_HOURS: JSON string defining working hours per day
+
+3. Performance and Caching:
+   - CALENDAR_CACHE_TTL: Token cache time-to-live
+   - CALENDAR_CACHE_SIZE: Maximum cache size
+   - CALENDAR_RATE_LIMIT_PER_MINUTE: API rate limiting
+   - CALENDAR_MAX_CONCURRENT_OPERATIONS: Concurrent operation limit
 """

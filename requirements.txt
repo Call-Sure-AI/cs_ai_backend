@@ -7,7 +7,6 @@ boto3
 aioboto3
 
 # Database
-sqlalchemy
 psycopg2-binary
 asyncpg  # For async database connections
 
@@ -44,7 +43,7 @@ pytest-mock
 pyjwt
 
 # Redis Caching and Rate Limiting
-redis
+redis>=5.0.0
 
 # Token Handling for OpenAI
 tiktoken
@@ -68,3 +67,28 @@ google-crc32c==1.5.0  # For data integrity checks
 numpy>=1.24.0  # For media processing
 opencv-python-headless>=4.8.0  # For video processing (if needed)
 sounddevice>=0.4.6  # For audio processing (if needed)
+
+pandas>=2.0.0
+SQLAlchemy>=2.0.0
+python-magic>=0.4.27
+textract>=1.6.5
+beautifulsoup4>=4.12.0
+aiofiles>=23.1.0
+
+qdrant-client>=1.6.0
+
+langchain-openai>=0.0.5
+langchain-community>=0.0.20
+langchain>=0.1.0
+langchain-core>=0.1.0
+PyPDF2>=3.0.0
+
+chromadb>=0.4.22
+
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+google-api-python-client>=2.0.0
+O365>=2.0.0
+tenacity>=8.0.0
+pytz>=2024.1
