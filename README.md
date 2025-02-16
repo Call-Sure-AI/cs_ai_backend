@@ -180,18 +180,22 @@ ai_backend/
 │   ├── api/
 │   │   ├── gpt/
 │   │   │   ├── service.py
-│   │   │   └── utils.py
+│   │   │   ├── utils.py
+│   │   │   └── __init__.py
 │   │   ├── claude/
 │   │   │   ├── service.py
-│   │   │   └── utils.py
+│   │   │   ├── utils.py
+│   │   │   └── __init__.py
 │   │   ├── llama/
 │   │   │   ├── service.py
-│   │   │   └── utils.py
+│   │   │   ├── utils.py
+│   │   │   └── __init__.py
 │   │   ├── tts/
 │   │   │   ├── eleven_labs.py
 │   │   │   ├── google_tts.py
 │   │   │   ├── gpt_realtime.py
-│   │   │   └── utils.py
+│   │   │   ├── utils.py
+│   │   │   └── __init__.py
 │   │   ├── stt/
 │   │   │   ├── deepgram_service.py
 │   │   │   ├── deepgram_test_service.py
@@ -218,6 +222,11 @@ ai_backend/
 │   │   ├── ai_routes_handlers.py
 │   │   ├── voice_routes_handlers.py
 │   │   ├── healthcheck_handlers.py
+│   │   ├── calendar_routes_handlers.py
+│   │   ├── data_routes_handlers.py
+│   │   ├── rag_routes_handlers.py
+│   │   ├── vector_store_handlers.py
+│   │   ├── webrtc_handlers.py
 │   │   └── __init__.py
 │   ├── services/
 │   │   ├── storage/
@@ -225,6 +234,23 @@ ai_backend/
 │   │   │   └── __init__.py
 │   │   ├── database/
 │   │   │   ├── aurora_client.py  # Aurora DB queries
+│   │   │   └── __init__.py
+│   │   ├── audio/
+│   │   │   ├── audio_service.py
+│   │   │   └── __init__.py
+│   │   ├── calendar/
+│   │   │   ├── token_manager.py
+│   │   │   ├── microsoft_calendar.py
+│   │   │   └── __init__.py
+│   │   ├── dataloaders/
+│   │   │   ├── data_loaders.py
+│   │   │   └── __init__.py
+│   │   ├── rag/
+│   │   │   ├── rag_service.py
+│   │   │   └── __init__.py
+│   │   ├── webrtc/
+│   │   │   ├── manager.py
+│   │   │   ├── peer_connection.py
 │   │   │   └── __init__.py
 │   │   ├── session_manager.py
 │   │   ├── message_router.py
