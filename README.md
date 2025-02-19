@@ -166,7 +166,7 @@ This project is a backend system for AI-driven services, including GPT, RAG (Ret
 
 ## Folder Structure
 
-```
+``` 
 ai_backend/
 ├── docs/
 │   ├── api.md
@@ -239,8 +239,11 @@ ai_backend/
 │   │   │   ├── audio_service.py
 │   │   │   └── __init__.py
 │   │   ├── calendar/
+│   │   │   ├── calendar_integration.py
 │   │   │   ├── token_manager.py
-│   │   │   ├── microsoft_calendar.py
+│   │   │   ├── types.py
+│   │   │   ├── async_microsoft_calendar.py
+│   │   │   ├── async_google_calendar.py
 │   │   │   └── __init__.py
 │   │   ├── dataloaders/
 │   │   │   ├── data_loaders.py

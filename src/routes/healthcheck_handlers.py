@@ -13,7 +13,7 @@ from src.services.rag.rag_service import RAGService
 from src.services.vector_store.chroma_service import VectorStore
 from src.services.vector_store.qdrant_service import QdrantService
 from src.services.calendar.calendar_service import CalendarConfig, CalendarIntegration, CalendarType
-from src.services.calendar.microsoft_calendar import MicrosoftCalendar, MicrosoftConfig
+from src.services.calendar.async_microsoft_calendar import MicrosoftCalendar, MicrosoftConfig
 from datetime import datetime, timedelta
 import pytz
 
