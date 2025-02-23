@@ -7,7 +7,8 @@ from routes.ai_routes_handlers import ai_router
 from routes.voice_routes_handlers import voice_router
 from routes.healthcheck_handlers import healthcheck_router
 from routes.webrtc_handlers import router as webrtc_router
-from routes.calendar_routes_handlers import calendar_router  # Add Calendar router import
+from routes.calendar_routes_handlers import calendar_router
+from routes.google_sheets_routes import router as google_sheets_router  # ✅ Correct import
 
 app = FastAPI(
     title="AI Backend",
@@ -35,4 +36,5 @@ app.include_router(healthcheck_router, prefix=f"{APP_PREFIX}/health", tags=["Hea
 app.include_router(ai_router, prefix=f"{APP_PREFIX}/ai", tags=["AI"])
 app.include_router(voice_router, prefix=f"{APP_PREFIX}/voice", tags=["Voice"])
 app.include_router(webrtc_router, prefix=f"{APP_PREFIX}/webrtc", tags=["WebRTC"])
-app.include_router(calendar_router, prefix=f"{APP_PREFIX}/calendar", tags=["Calendar"])  # Add Calendar router
+app.include_router(calendar_router, prefix=f"{APP_PREFIX}/calendar", tags=["Calendar"])
+app.include_router(google_sheets_router, prefix=f"{APP_PREFIX}/google_sheets", tags=["Google Sheets"])

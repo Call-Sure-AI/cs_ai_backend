@@ -92,3 +92,5 @@ google-api-python-client>=2.0.0
 O365>=2.0.0
 tenacity>=8.0.0
 pytz>=2024.1
+
+anthropic

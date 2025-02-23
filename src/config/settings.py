@@ -5,61 +5,65 @@ from typing import Dict, Any, List, Set
 
 # Define environment variable configuration
 ENV_VARS = {
-   # Database
-   "DATABASE_URL": {"required": True},
-   
-   # AWS S3
-   "AWS_ACCESS_KEY_ID": {"required": True},
-   "AWS_SECRET_ACCESS_KEY": {"required": True}, 
-   "S3_BUCKET_NAME": {"default": "ConvoAudioAndTranscripts"},
-   "S3_REGION": {"default": "ap-south-1", "required": True},
-   
-   # Redis
-   "REDIS_HOST": {"default": "localhost"},
-   "REDIS_PORT": {"default": "6379", "type": int},
-   "REDIS_PASSWORD": {"default": None},
-   
-   # OpenAI API
-   "GPT_API_KEY": {"required": True},
-   "DEFAULT_GPT_MODEL": {"default": "gpt-4o"},
-   "DEFAULT_EMBEDDING_MODEL": {"default": "text-embedding-3-small"},
-   
-   # Logging
-   "LOG_DIR": {"default": "./logs"},
-   "LOG_LEVEL": {"default": "INFO"},
-   
-   # Application
-   "APP_PREFIX": {"default": "/api/v1"},
-   "SECRET_KEY": {"default": "change-this-in-production"},
-   "PERMANENT_SESSION_LIFETIME": {"default": "30", "type": int},
-   "DEBUG": {"default": "False", "type": lambda x: x.lower() in ("true", "1")},
-   "APP_PORT": {"default": "8000", "type": int, "validator": lambda x: 1 <= x <= 65535},
-   
-   # Rate Limiting
-   "RATE_LIMIT_TTL": {"default": "604800", "type": int},
-   "RATE_LIMIT_THRESHOLD": {"default": "100", "type": int},
-   
-   # Scheduler
-   "SCHEDULER_INTERVAL_MINUTES": {"default": "2", "type": int},
-   
-   # Feature Flags
-   "ENABLE_S3_UPLOADS": {"default": "true", "type": lambda x: x.lower() == "true"},
-   "ENABLE_RATE_LIMITING": {"default": "true", "type": lambda x: x.lower() == "true"},
-   
-   # CORS
-   "ALLOWED_ORIGINS": {"default": "*", "type": lambda x: x.split(",")},
-   
-   # WebRTC Settings
-   "WEBRTC_ICE_SERVERS": {
-       "default": '[{"urls": ["stun:stun.l.google.com:19302"]}]',
-       "type": json.loads,
-       "validator": lambda x: isinstance(x, list) and all(isinstance(s, dict) for s in x)
-   },
-   "WEBRTC_MAX_MESSAGE_SIZE": {"default": "1048576", "type": int},  # 1MB
-   "WEBRTC_HEARTBEAT_INTERVAL": {"default": "30", "type": int},  # seconds
-   "WEBRTC_CONNECTION_TIMEOUT": {"default": "300", "type": int},  # seconds
-   "WEBRTC_MAX_CONNECTIONS_PER_COMPANY": {"default": "100", "type": int},
-   "ENABLE_WEBRTC": {"default": "true", "type": lambda x: x.lower() == "true"},
+    # Database
+    "DATABASE_URL": {"required": True},
+    
+    # AWS S3
+    "AWS_ACCESS_KEY_ID": {"required": True},
+    "AWS_SECRET_ACCESS_KEY": {"required": True}, 
+    "S3_BUCKET_NAME": {"default": "ConvoAudioAndTranscripts"},
+    "S3_REGION": {"default": "ap-south-1", "required": True},
+    
+    # Redis
+    "REDIS_HOST": {"default": "localhost"},
+    "REDIS_PORT": {"default": "6379", "type": int},
+    "REDIS_PASSWORD": {"default": None},
+    
+    # OpenAI API
+    "GPT_API_KEY": {"required": True},
+    "DEFAULT_GPT_MODEL": {"default": "gpt-4o"},
+    "DEFAULT_EMBEDDING_MODEL": {"default": "text-embedding-3-small"},
+
+    # Anthropic Claude API
+    "CLAUDE_API_KEY": {"required": True},
+    "DEFAULT_CLAUDE_MODEL": {"default": "claude-3"},
+
+    # Logging
+    "LOG_DIR": {"default": "./logs"},
+    "LOG_LEVEL": {"default": "INFO"},
+    
+    # Application
+    "APP_PREFIX": {"default": "/api/v1"},
+    "SECRET_KEY": {"default": "change-this-in-production"},
+    "PERMANENT_SESSION_LIFETIME": {"default": "30", "type": int},
+    "DEBUG": {"default": "False", "type": lambda x: x.lower() in ("true", "1")},
+    "APP_PORT": {"default": "8000", "type": int, "validator": lambda x: 1 <= x <= 65535},
+    
+    # Rate Limiting
+    "RATE_LIMIT_TTL": {"default": "604800", "type": int},
+    "RATE_LIMIT_THRESHOLD": {"default": "100", "type": int},
+    
+    # Scheduler
+    "SCHEDULER_INTERVAL_MINUTES": {"default": "2", "type": int},
+    
+    # Feature Flags
+    "ENABLE_S3_UPLOADS": {"default": "true", "type": lambda x: x.lower() == "true"},
+    "ENABLE_RATE_LIMITING": {"default": "true", "type": lambda x: x.lower() == "true"},
+    
+    # CORS
+    "ALLOWED_ORIGINS": {"default": "*", "type": lambda x: x.split(",")},
+    
+    # WebRTC Settings
+    "WEBRTC_ICE_SERVERS": {
+        "default": '[{"urls": ["stun:stun.l.google.com:19302"]}]',
+        "type": json.loads,
+        "validator": lambda x: isinstance(x, list) and all(isinstance(s, dict) for s in x)
+    },
+    "WEBRTC_MAX_MESSAGE_SIZE": {"default": "1048576", "type": int},  # 1MB
+    "WEBRTC_HEARTBEAT_INTERVAL": {"default": "30", "type": int},  # seconds
+    "WEBRTC_CONNECTION_TIMEOUT": {"default": "300", "type": int},  # seconds
+    "WEBRTC_MAX_CONNECTIONS_PER_COMPANY": {"default": "100", "type": int},
+    "ENABLE_WEBRTC": {"default": "true", "type": lambda x: x.lower() == "true"},
 
     "DEEPGRAM_API_KEY": {"required": True},
 
