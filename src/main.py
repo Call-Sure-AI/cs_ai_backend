@@ -1,12 +1,17 @@
 import uvicorn
-from config.settings import APP_PORT, DEBUG
+import sys
+from pathlib import Path
+
+# Add the project root to the Python path
+root_path = str(Path(__file__).parent)
+if root_path not in sys.path:
+    sys.path.append(root_path)
 
 if __name__ == "__main__":
-    # Run the app using Uvicorn with import string
     uvicorn.run(
-        "app:app",  # Use import string instead of app instance
+        "app:app",
         host="0.0.0.0",
-        port=APP_PORT,
-        reload=DEBUG,
-        log_level="debug" if DEBUG else "info",
+        port=8000,
+        reload=True,
+        workers=1
     )

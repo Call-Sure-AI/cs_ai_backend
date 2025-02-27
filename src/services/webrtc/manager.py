@@ -1,72 +1,17 @@
-# src/services/webrtc/__init__.py
-from .manager import WebRTCManager
-from .peer_connection import PeerConnection
-
-__all__ = ['WebRTCManager', 'PeerConnection']
-
-# src/services/webrtc/peer_connection.py
-from typing import Optional, Dict, Any
-import logging
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
-
-class PeerConnection:
-    def __init__(self, peer_id: str, company_info: dict):
-        self.peer_id = peer_id
-        self.company_id = str(company_info['id'])
-        self.company_info = company_info
-        self.connected_at = datetime.utcnow()
-        self.last_activity = self.connected_at
-        self.websocket = None
-        self.message_count = 0
-        
-    async def set_websocket(self, websocket):
-        """Set the WebSocket connection for this peer"""
-        self.websocket = websocket
-        
-    async def send_message(self, message: Dict[str, Any]):
-        """Send a message through the peer's WebSocket"""
-        if self.websocket and not self.websocket.closed:
-            self.last_activity = datetime.utcnow()
-            await self.websocket.send_json(message)
-            self.message_count += 1
-            
-    async def close(self):
-        """Close the peer connection"""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.close()
-            
-    def is_active(self, timeout_seconds: int = 300) -> bool:
-        """Check if the peer connection is active within timeout period"""
-        if not self.websocket or self.websocket.closed:
-            return False
-        
-        time_diff = (datetime.utcnow() - self.last_activity).total_seconds()
-        return time_diff < timeout_seconds
-
-    def get_stats(self) -> Dict[str, Any]:
-        """Get connection statistics"""
-        return {
-            "peer_id": self.peer_id,
-            "company_id": self.company_id,
-            "connected_at": self.connected_at.isoformat(),
-            "last_activity": self.last_activity.isoformat(),
-            "message_count": self.message_count,
-            "is_connected": bool(self.websocket and not self.websocket.closed)
-        }
-
 # src/services/webrtc/manager.py
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, Any
 import logging
 from datetime import datetime
 import asyncio
+import os
 from sqlalchemy.orm import Session
 from fastapi import WebSocket
 
 from .peer_connection import PeerConnection
+from .audio_handler import WebRTCAudioHandler
 from services.qdrant_embedding import QdrantService
 from managers.agent_manager import AgentManager
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +21,11 @@ class WebRTCManager:
         self.company_peers: Dict[str, Set[str]] = {}  # company_id -> set of peer_ids
         self.agent_manager: Optional[AgentManager] = None
         self.vector_store: Optional[QdrantService] = None
+        
+        # Initialize audio handler
+        audio_save_path = os.path.join(settings.MEDIA_ROOT, 'audio') if hasattr(settings, 'MEDIA_ROOT') else None
+        self.audio_handler = WebRTCAudioHandler(audio_save_path=audio_save_path)
+        logger.info("WebRTC audio handler initialized")
         
     def initialize_services(self, db: Session, vector_store: QdrantService):
         """Initialize required services"""
@@ -107,6 +57,12 @@ class WebRTCManager:
             peer = self.peers[peer_id]
             company_id = peer.company_id
             
+            # Close any active audio streams for this peer
+            try:
+                await self.audio_handler.end_audio_stream(peer_id)
+            except Exception as e:
+                logger.warning(f"Error ending audio stream during peer unregistration: {str(e)}")
+            
             # Close peer connection
             await peer.close()
             
@@ -136,7 +92,64 @@ class WebRTCManager:
             for peer_id in self.company_peers[company_id]:
                 if peer_id in self.peers:
                     await self.peers[peer_id].send_message(message)
+    
+    async def handle_audio_message(self, peer_id: str, message_data: dict) -> dict:
+        """Handle audio-related messages"""
+        if peer_id not in self.peers:
+            logger.warning(f"Audio message received for unknown peer: {peer_id}")
+            return {"status": "error", "error": "Unknown peer"}
+        
+        action = message_data.get("action", "")
+        
+        if action == "start_stream":
+            # Start a new audio stream
+            result = await self.audio_handler.start_audio_stream(
+                peer_id, message_data.get("metadata", {})
+            )
+            logger.info(f"Started audio stream for peer {peer_id}: {result}")
+            return result
+            
+        elif action == "audio_chunk":
+            # Process an audio chunk
+            result = await self.audio_handler.process_audio_chunk(
+                peer_id, message_data.get("chunk_data", {})
+            )
+            # Only log at debug level to avoid log spam
+            logger.debug(f"Processed audio chunk for peer {peer_id}")
+            return result
+            
+        elif action == "end_stream":
+            # End an audio stream
+            result = await self.audio_handler.end_audio_stream(
+                peer_id, message_data.get("metadata", {})
+            )
+            logger.info(f"Ended audio stream for peer {peer_id}: {result}")
+            return result
+            
+        else:
+            logger.warning(f"Unknown audio action: {action}")
+            return {"status": "error", "error": f"Unknown action: {action}"}
                     
+    async def process_message(self, peer_id: str, message_data: dict):
+        """Process general messages from peers"""
+        if peer_id in self.peers:
+            message_type = message_data.get("type", "")
+            
+            if message_type == "audio":
+                # Handle audio-specific messages
+                result = await self.handle_audio_message(peer_id, message_data)
+                
+                # Send result back to the peer
+                peer = self.peers[peer_id]
+                await peer.send_message({
+                    "type": "audio_response",
+                    "data": result
+                })
+                
+            elif message_type == "message":
+                # Handle regular text messages through agent manager
+                await self.process_streaming_message(peer_id, message_data)
+                
     async def process_streaming_message(self, peer_id: str, message_data: dict):
         """Process streaming message through agent manager"""
         if peer_id in self.peers and self.agent_manager:
@@ -168,5 +181,6 @@ class WebRTCManager:
             },
             "peer_details": [
                 peer.get_stats() for peer in self.peers.values()
-            ]
+            ],
+            "audio_stats": self.audio_handler.get_stats()
         }

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict
 import redis
-from src.config.settings import (
+from config.settings import (
     REDIS_HOST, 
     REDIS_PORT, 
     GOOGLE_SERVICE_ACCOUNT_FILE, 
@@ -9,11 +9,11 @@ from src.config.settings import (
     MICROSOFT_CLIENT_ID
 )
 import logging
-from src.services.rag.rag_service import RAGService
-from src.services.vector_store.chroma_service import VectorStore
-from src.services.vector_store.qdrant_service import QdrantService
-from src.services.calendar.calendar_service import CalendarConfig, CalendarIntegration, CalendarType
-from src.services.calendar.async_microsoft_calendar import MicrosoftCalendar, MicrosoftConfig
+from services.rag.rag_service import RAGService
+# from services.vector_store.chroma_service import VectorStore
+from services.vector_store.qdrant_service import QdrantService
+# from services.calendar.calendar_service import CalendarConfig, CalendarIntegration, CalendarType
+from services.calendar.async_microsoft_calendar import MicrosoftCalendar, MicrosoftConfig
 from datetime import datetime, timedelta
 import pytz
 
@@ -81,31 +81,31 @@ async def health_check() -> Dict:
         status["status"] = "degraded"
 
     # Check vector store
-    try:
-        vector_store = VectorStore()
-        # Try to create a test collection
-        await vector_store.create_company_collection("health_check")
-    except Exception as e:
-        logger.error(f"Vector store healthcheck failed: {str(e)}")
-        status["vector_store"] = "degraded"
-        status["status"] = "degraded"
+    # try:
+    #     vector_store = VectorStore()
+    #     # Try to create a test collection
+    #     await vector_store.create_company_collection("health_check")
+    # except Exception as e:
+    #     logger.error(f"Vector store healthcheck failed: {str(e)}")
+    #     status["vector_store"] = "degraded"
+    #     status["status"] = "degraded"
 
     # Check Google Calendar service
-    try:
-        config = CalendarConfig(
-            service_account_json=GOOGLE_SERVICE_ACCOUNT_FILE,
-            calendar_id=GOOGLE_CALENDAR_ID
-        )
-        calendar = CalendarIntegration(config)
-        await calendar.check_availability(
-            datetime.now(pytz.UTC),
-            datetime.now(pytz.UTC) + timedelta(minutes=30),
-            CalendarType.GOOGLE
-        )
-    except Exception as e:
-        logger.error(f"Google Calendar service healthcheck failed: {str(e)}")
-        status["calendar_services"]["google"] = "degraded"
-        status["status"] = "degraded"
+    # try:
+    #     config = CalendarConfig(
+    #         service_account_json=GOOGLE_SERVICE_ACCOUNT_FILE,
+    #         calendar_id=GOOGLE_CALENDAR_ID
+    #     )
+    #     calendar = CalendarIntegration(config)
+    #     await calendar.check_availability(
+    #         datetime.now(pytz.UTC),
+    #         datetime.now(pytz.UTC) + timedelta(minutes=30),
+    #         CalendarType.GOOGLE
+    #     )
+    # except Exception as e:
+    #     logger.error(f"Google Calendar service healthcheck failed: {str(e)}")
+    #     status["calendar_services"]["google"] = "degraded"
+        # status["status"] = "degraded"
 
     # Check Microsoft Calendar service
     try:
