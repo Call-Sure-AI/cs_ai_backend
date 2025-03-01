@@ -9,8 +9,9 @@ from fastapi import WebSocket
 
 from .peer_connection import PeerConnection
 from .audio_handler import WebRTCAudioHandler
-from services.qdrant_embedding import QdrantService
+from services.vector_store.qdrant_service import QdrantService
 from managers.agent_manager import AgentManager
+from managers.connection_manager import ConnectionManager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ class WebRTCManager:
         self.peers: Dict[str, PeerConnection] = {}  # peer_id -> PeerConnection
         self.company_peers: Dict[str, Set[str]] = {}  # company_id -> set of peer_ids
         self.agent_manager: Optional[AgentManager] = None
+        self.connection_manager: Optional[ConnectionManager] = None
         self.vector_store: Optional[QdrantService] = None
         
         # Initialize audio handler
@@ -30,9 +32,16 @@ class WebRTCManager:
     def initialize_services(self, db: Session, vector_store: QdrantService):
         """Initialize required services"""
         self.vector_store = vector_store
+        
+        # Initialize agent manager if not already present
         if not self.agent_manager:
             self.agent_manager = AgentManager(db, vector_store)
             logger.info("Agent manager initialized")
+            
+        # Initialize connection manager if not already present
+        if not self.connection_manager:
+            self.connection_manager = ConnectionManager(db, vector_store)
+            logger.info("Connection manager initialized")
             
     async def register_peer(self, peer_id: str, company_info: dict, websocket: WebSocket) -> PeerConnection:
         """Register a new peer connection"""
@@ -48,6 +57,12 @@ class WebRTCManager:
             self.company_peers[company_id] = set()
         self.company_peers[company_id].add(peer_id)
         
+        # If this is a client peer (not a WebRTC signaling peer),
+        # register with connection manager as well
+        if peer_id.startswith('client_') and self.connection_manager:
+            await self.connection_manager.connect(websocket, peer_id)
+            self.connection_manager.client_companies[peer_id] = company_info
+            
         logger.info(f"Registered peer {peer_id} for company {company_id}")
         return peer
         
@@ -62,6 +77,10 @@ class WebRTCManager:
                 await self.audio_handler.end_audio_stream(peer_id)
             except Exception as e:
                 logger.warning(f"Error ending audio stream during peer unregistration: {str(e)}")
+            
+            # Unregister from connection manager if it's a client peer
+            if peer_id.startswith('client_') and self.connection_manager:
+                self.connection_manager.disconnect(peer_id)
             
             # Close peer connection
             await peer.close()
@@ -147,23 +166,80 @@ class WebRTCManager:
                 })
                 
             elif message_type == "message":
-                # Handle regular text messages through agent manager
+                # Handle streaming text messages through connection manager
                 await self.process_streaming_message(peer_id, message_data)
                 
     async def process_streaming_message(self, peer_id: str, message_data: dict):
-        """Process streaming message through agent manager"""
-        if peer_id in self.peers and self.agent_manager:
+        """Process streaming message using ConnectionManager"""
+        try:
+            if peer_id not in self.peers:
+                logger.warning(f"Message received for unknown peer: {peer_id}")
+                return
+                
             peer = self.peers[peer_id]
+            
+            # Check if we have a connection manager
+            if not self.connection_manager:
+                logger.error("Connection manager not initialized")
+                await peer.send_message({
+                    "type": "error",
+                    "message": "Service not properly initialized"
+                })
+                return
+                
+            # Map peer to client ID if it's not already a client ID
+            client_id = peer_id
+            if not client_id.startswith('client_'):
+                # Generate a temporary client ID if we got a message from a non-client peer
+                client_id = f"client_{int(time.time() * 1000)}"
+                # Register the websocket with connection manager
+                await self.connection_manager.connect(peer.websocket, client_id)
+                self.connection_manager.client_companies[client_id] = peer.company_info
+                logger.info(f"Created temporary client ID {client_id} for peer {peer_id}")
+                
+            # Initialize agent resources if needed
             company_id = peer.company_id
             
-            response_stream = await self.agent_manager.process_message_stream(
-                company_id, message_data
-            )
+            # Check if the client already has agent resources
+            if client_id not in self.connection_manager.agent_resources:
+                # Get base agent
+                base_agent = await self.agent_manager.get_base_agent(company_id)
+                if not base_agent:
+                    logger.error(f"No base agent found for company {company_id}")
+                    await peer.send_message({
+                        "type": "error",
+                        "message": "No agent available"
+                    })
+                    return
+                    
+                # Initialize agent resources
+                success = await self.connection_manager.initialize_agent_resources(
+                    client_id,
+                    company_id,
+                    base_agent
+                )
+                
+                if not success:
+                    logger.error(f"Failed to initialize agent resources for {client_id}")
+                    await peer.send_message({
+                        "type": "error",
+                        "message": "Failed to initialize agent resources"
+                    })
+                    return
+                    
+                # Set active agent
+                self.connection_manager.active_agents[client_id] = base_agent['id']
+                    
+            # Process the message using connection manager
+            await self.connection_manager.process_streaming_message(client_id, message_data)
             
-            async for response in response_stream:
+        except Exception as e:
+            logger.error(f"Error processing message stream: {str(e)}", exc_info=True)
+            if peer_id in self.peers:
+                peer = self.peers[peer_id]
                 await peer.send_message({
-                    'type': 'stream',
-                    'data': response
+                    "type": "error",
+                    "message": f"Error processing message: {str(e)}"
                 })
                 
     def get_company_peers(self, company_id: str) -> list:

@@ -9,8 +9,8 @@ from fastapi import WebSocket
 from contextlib import asynccontextmanager
 from database.models import Company, Conversation, Agent, Document
 from managers.agent_manager import AgentManager
-from services.qdrant_embedding import QdrantService
-from services.rag_service import RAGService
+from services.vector_store.qdrant_service import QdrantService
+from services.rag.rag_service import RAGService
 from sqlalchemy.orm import Session
 import json
 from uuid import UUID
@@ -46,7 +46,7 @@ class ConnectionManager:
             self.vector_store = QdrantService()
         
         self.agent_manager = AgentManager(db_session, self.vector_store)
-        self.rag_service = RAGService()
+        self.rag_service = RAGService(self.vector_store)    
         
         
         # Connection monitoring
@@ -152,7 +152,7 @@ class ConnectionManager:
             #     return False
             
             # Create RAG service instance
-            rag_service = RAGService()
+            rag_service = RAGService(self.vector_store)
             
             # # First verify that embeddings exist and are accessible
             # embeddings_exist = await rag_service.verify_embeddings(
@@ -358,13 +358,73 @@ class ConnectionManager:
 
     
     
+    # async def process_streaming_message(self, client_id: str, message_data: dict):
+    #     """Process incoming WebSocket messages and stream responses."""
+    #     start_time = time.time()
+        
+    #     try:
+    #         websocket = self.active_connections.get(client_id)
+    #         if not websocket or websocket.client_state.name == "DISCONNECTED":
+    #             logger.warning(f"Dropping message for disconnected client {client_id}")
+    #             return
+
+    #         agent_resources = self.agent_resources.get(client_id)
+    #         logger.info(f"Agent resources for {client_id} are {agent_resources}")
+
+    #         if not agent_resources:
+    #             raise ValueError("Agent resources not initialized")
+
+    #         company_info = self.client_companies.get(client_id)
+    #         logger.info(f"Company info for {client_id} is {company_info}")
+
+    #         if not company_info or not websocket:
+    #             raise ValueError("Invalid connection state")
+
+    #         # Fetch conversation context
+    #         conversation = self.client_conversations.get(client_id)
+    #         if not conversation:
+    #             conversation = await self.agent_manager.create_conversation(company_info['id'], client_id)
+    #             logger.info(f"Created conversation {conversation}") 
+    #         if not conversation:
+    #             raise ValueError("Failed to create conversation")
+            
+    #         self.client_conversations[client_id] = conversation
+            
+    #         context = await self.agent_manager.get_conversation_context(conversation['id'])
+
+    #         # Get RAG Service
+    #         chain = agent_resources['chain']
+    #         rag_service = agent_resources['rag_service']
+
+    #         # ✅ Stream Response Token-by-Token
+    #         async for token in rag_service.get_answer_with_chain(
+    #             chain=chain,
+    #             question=message_data.get('message', ''),
+    #             conversation_context=context
+    #         ):
+    #             await websocket.send_json({"type": "text", "content": token})
+
+    #         # ✅ Mark response completion
+    #         await websocket.send_json({"type": "text", "content": "[END]"})
+            
+    #         logger.info(f"Final response sent to client {client_id}")
+
+    #     except Exception as e:
+    #         logger.error(f"Error processing message: {str(e)}", exc_info=True)
+    #         await self.handle_error(client_id, str(e))
+    #     finally:
+    #         logger.info(f"Processing time: {time.time() - start_time:.3f}s")
+
+    
     async def process_streaming_message(self, client_id: str, message_data: dict):
-        """Process incoming WebSocket messages and stream responses."""
+        """Process incoming WebSocket messages and stream responses with msg_id tracking."""
         start_time = time.time()
+        msg_id = str(time.time())  # Generate a unique message ID for this response
+        chunk_number = 0
         
         try:
             websocket = self.active_connections.get(client_id)
-            if not websocket or websocket.client_state.name == "DISCONNECTED":
+            if not websocket or self.websocket_is_closed(websocket):
                 logger.warning(f"Dropping message for disconnected client {client_id}")
                 return
 
@@ -396,16 +456,27 @@ class ConnectionManager:
             chain = agent_resources['chain']
             rag_service = agent_resources['rag_service']
 
-            # ✅ Stream Response Token-by-Token
+            # Stream Response Token-by-Token
             async for token in rag_service.get_answer_with_chain(
                 chain=chain,
                 question=message_data.get('message', ''),
                 conversation_context=context
             ):
-                await websocket.send_json({"type": "text", "content": token})
+                chunk_number += 1
+                await self.send_json(websocket, {
+                    "type": "stream_chunk",
+                    "text_content": token,
+                    "audio_content": None,  # No audio yet
+                    "chunk_number": chunk_number,
+                    "msg_id": msg_id
+                })
+                logger.info(f"Chunk {chunk_number} sent to client {client_id} and msg_id {msg_id}, content: {token}")
 
-            # ✅ Mark response completion
-            await websocket.send_json({"type": "text", "content": "[END]"})
+            # Send end of stream message
+            await self.send_json(websocket, {
+                "type": "stream_end",
+                "msg_id": msg_id
+            })
             
             logger.info(f"Final response sent to client {client_id}")
 
@@ -414,7 +485,7 @@ class ConnectionManager:
             await self.handle_error(client_id, str(e))
         finally:
             logger.info(f"Processing time: {time.time() - start_time:.3f}s")
-
+    
     
     async def send_welcome_message(self, client_id: str):
         try:

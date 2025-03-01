@@ -1,3 +1,4 @@
+# src/database/config.py
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.declarative import declarative_base
@@ -6,9 +7,9 @@ from dotenv import load_dotenv
 from urllib.parse import quote_plus
 import logging
 from contextlib import contextmanager
+import sqlalchemy.exc
 
 # Load environment variables
-# load_dotenv()
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 
 # Configure logging
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 logger.info(f"Loading environment variables from {dotenv_path}")
 load_dotenv(dotenv_path)
+
 # Create declarative base
 Base = declarative_base()
 
@@ -44,15 +46,19 @@ def create_db_engine():
         
         engine = create_engine(
             database_url,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=10,              # Increased from 5
+            max_overflow=20,           # Increased from 10
             pool_timeout=30,
-            pool_recycle=1800,
+            pool_recycle=600,          # Reduced from 1800 (30 minutes → 10 minutes)
             pool_pre_ping=True,
             connect_args={
                 "sslmode": "require",
                 "connect_timeout": 60,
-                "application_name": "ai_closer_app"
+                "application_name": "ai_closer_app",
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5
             }
         )
         return engine
@@ -68,14 +74,49 @@ except Exception as e:
     logger.error(f"Failed to initialize database: {str(e)}")
     raise
 
-# Add the get_db function
 def get_db():
-    """Database session dependency"""
+    """Database session dependency with improved error handling for WebSockets"""
     db = SessionLocal()
     try:
         yield db
+    except Exception as e:
+        logger.error(f"Database session error: {str(e)}")
+        # Make sure we rollback on exception
+        try:
+            db.rollback()
+        except Exception:
+            pass
     finally:
-        db.close()
+        # Safely close the session
+        try:
+            db.close()
+        except sqlalchemy.exc.OperationalError as e:
+            # Handle SSL connection errors gracefully
+            if "SSL connection has been closed unexpectedly" in str(e):
+                logger.warning("SSL connection was already closed, ignoring")
+            else:
+                logger.warning(f"Error closing database connection: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Error closing database connection: {str(e)}")
+
+# For long-running processes like WebSockets, use a specific session manager
+@contextmanager
+def get_websocket_db():
+    """Special database session for WebSocket handlers"""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception as e:
+        logger.error(f"WebSocket database session error: {str(e)}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            db.close()
+        except Exception as e:
+            logger.warning(f"Error closing WebSocket database connection: {str(e)}")
 
 # Export all necessary components
-__all__ = ['engine', 'SessionLocal', 'Base', 'get_db']
+__all__ = ['engine', 'SessionLocal', 'Base', 'get_db', 'get_websocket_db']
