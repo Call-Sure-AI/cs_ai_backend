@@ -99,11 +99,11 @@ ENV_VARS = {
     "ENABLE_DB_CONNECTION_POOLING": {"default": "true", "type": lambda x: x.lower() == "true"},
 
     # Qdrant Configuration
-    "QDRANT_HOST": {"default": "3.108.58.159"},
-    "QDRANT_PORT": {"default": "6333", "type": int},
+    "QDRANT_HOST": {"default": "qdrant.callsure.ai"},
+    "QDRANT_PORT": {"default": "443", "type": int},
     "QDRANT_GRPC_PORT": {"default": "6334", "type": int},
     "QDRANT_API_KEY": {"default": "68cd8841-53bd-439a-aafe-be4b32812943"},
-    "QDRANT_HTTPS": {"default": "false", "type": lambda x: x.lower() == "true"},
+    "QDRANT_HTTPS": {"default": "true", "type": lambda x: x.lower() == "true"},
     "EMBEDDINGS_DIR": {"default": "./embeddings"},
     "VECTOR_DIMENSION": {"default": "1536", "type": int},
     "SEARCH_SCORE_THRESHOLD": {"default": "0.1", "type": float},
@@ -247,11 +247,11 @@ class Settings(BaseSettings):
     OPENAI_EMBEDDING_MODEL: str = env_values.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Qdrant Settings
-    QDRANT_HOST: str = env_values.get("QDRANT_HOST", "3.108.58.159")
-    QDRANT_PORT: int = env_values.get("QDRANT_PORT", 6333)
+    QDRANT_HOST: str = env_values.get("QDRANT_HOST", "qdrant.callsure.ai")
+    QDRANT_PORT: int = env_values.get("QDRANT_PORT", 443)
     QDRANT_GRPC_PORT: int = env_values.get("QDRANT_GRPC_PORT", 6334)
     QDRANT_API_KEY: str = env_values.get("QDRANT_API_KEY", "68cd8841-53bd-439a-aafe-be4b32812943")
-    QDRANT_HTTPS: bool = env_values.get("QDRANT_HTTPS", False)
+    QDRANT_HTTPS: bool = env_values.get("QDRANT_HTTPS", True)
     
     # Redis
     REDIS_HOST: str = env_values.get("REDIS_HOST", "localhost")

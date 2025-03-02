@@ -19,10 +19,9 @@ class QdrantService:
         )
         
         self.qdrant_client = QdrantClient(
-            host=settings.QDRANT_HOST,
-            port=settings.QDRANT_PORT,
+            url=f"https://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
             api_key=settings.QDRANT_API_KEY,
-            https=settings.QDRANT_HTTPS
+            timeout=30  # Added timeout for better reliability
         )
         
         # Cache for vector stores
@@ -78,12 +77,11 @@ class QdrantService:
             vector_store = QdrantVectorStore.from_existing_collection(
                 embedding=self.embeddings,
                 collection_name=collection_name,
-                url=f"{'https' if settings.QDRANT_HTTPS else 'http'}://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
+                url=f"https://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}",
                 api_key=settings.QDRANT_API_KEY,
                 content_payload_key="page_content",
                 metadata_payload_key="metadata"
             )
-            
             # Cache the vector store
             self.vector_stores[collection_name] = vector_store
             return vector_store
