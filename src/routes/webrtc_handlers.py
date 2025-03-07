@@ -110,6 +110,7 @@ async def signaling_endpoint(
         
         # Main message loop
         while not websocket_closed:
+            logger.info(f"Waiting for message from peer {peer_id}")
             loop_start = time.time()
             message_type = None  # Initialize message_type at the start of each loop
             
@@ -143,6 +144,7 @@ async def signaling_endpoint(
                     })
                 elif message_type == 'message':
                     # Handle streaming messages directly using webrtc_manager
+                    logger.info(f"Received message from peer {peer_id}: {data}")
                     await webrtc_manager.process_streaming_message(peer_id, data)
                 elif message_type == 'ping':
                     await peer.send_message({'type': 'pong'})

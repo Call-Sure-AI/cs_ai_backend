@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 import json
 from uuid import UUID
 from json import JSONEncoder
+import types
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +417,15 @@ class ConnectionManager:
     #         logger.info(f"Processing time: {time.time() - start_time:.3f}s")
 
     
-    async def process_streaming_message(self, client_id: str, message_data: dict):
+    # Updated process_streaming_message method for ConnectionManager class
+# Add this to your existing connection_manager.py file
+
+    async def process_streaming_message(
+        self, 
+        client_id: str, 
+        message_data: dict, 
+        webrtc_manager=None
+    ):
         """Process incoming WebSocket messages and stream responses with msg_id tracking."""
         start_time = time.time()
         msg_id = str(time.time())  # Generate a unique message ID for this response
@@ -456,11 +465,176 @@ class ConnectionManager:
             chain = agent_resources['chain']
             rag_service = agent_resources['rag_service']
 
+            # Check if rag_service has intent detector
+            if not hasattr(rag_service, 'intent_detector'):
+                try:
+                    # Import the communication intent detector
+                    from services.rag.communication_intent_detector import CommunicationIntentDetector
+                    # Add intent detector to rag_service
+                    rag_service.intent_detector = CommunicationIntentDetector()
+                    logger.info("Added communication intent detector to RAG service")
+                except Exception as e:
+                    logger.warning(f"Failed to add communication intent detector: {str(e)}")
+
+            # Add process_communication_intent method if not present
+            # if hasattr(rag_service, 'intent_detector') and not hasattr(rag_service, 'process_communication_intent'):
+            #     async def process_communication_intent(self, question, conversation_context, webrtc_manager=None, client_id=None):
+            #         """Dynamic method to process communication intents"""
+            #         try:
+            #             if not webrtc_manager or not client_id:
+            #                 return None
+                        
+            #             # Detect the intent
+            #             intent_result = await self.intent_detector.detect_intent(question)
+            #             logger.info(f"Intent detection result: {intent_result}")
+                        
+            #             if not intent_result.get("has_intent", False):
+            #                 return None
+                        
+            #             intent_type = intent_result.get("intent_type")
+                        
+            #             # Process email intent
+            #             if intent_type == "email":
+            #                 # Extract detailed email information
+            #                 email_details = await self.intent_detector.extract_email_details(
+            #                     conversation_history=conversation_context,
+            #                     current_request=question
+            #                 )
+            #                 logger.info(f"Extracted email details: {email_details}")
+                            
+            #                 # Handle the email request
+            #                 result = await webrtc_manager.handle_communication_request(
+            #                     client_id=client_id,
+            #                     action="send_email",
+            #                     params=email_details
+            #                 )
+                            
+            #                 return {
+            #                     "action": "email",
+            #                     "result": result,
+            #                     "details": email_details
+            #                 }
+                        
+            #             # Process meeting intent
+            #             elif intent_type == "meeting":
+            #                 # Extract detailed meeting information
+            #                 meeting_details = await self.intent_detector.extract_meeting_details(
+            #                     conversation_history=conversation_context,
+            #                     current_request=question
+            #                 )
+            #                 logger.info(f"Extracted meeting details: {meeting_details}")
+                            
+            #                 # Handle the meeting request
+            #                 result = await webrtc_manager.handle_communication_request(
+            #                     client_id=client_id,
+            #                     action="schedule_meeting",
+            #                     params=meeting_details
+            #                 )
+                            
+            #                 return {
+            #                     "action": "meeting",
+            #                     "result": result,
+            #                     "details": meeting_details
+            #                 }
+                        
+            #             return None
+                            
+            #         except Exception as e:
+            #             logger.error(f"Error processing communication intent: {str(e)}", exc_info=True)
+            #             return None
+
+            #     # Attach the method to the rag_service instance
+                
+            #     rag_service.process_communication_intent = types.MethodType(process_communication_intent, rag_service)
+            #     logger.info("Added process_communication_intent method to RAG service")
+
+            # Update get_answer_with_chain if needed
+            original_get_answer_with_chain = rag_service.get_answer_with_chain
+            
+            async def enhanced_get_answer_with_chain(
+                self, 
+                chain, 
+                question, 
+                conversation_context=None, 
+                webrtc_manager=None, 
+                client_id=None
+            ):
+                """Enhanced version that handles communication intents"""
+                try:
+                    logger.info(f"Enhanced chain query with question: {question}")
+                    
+                    # First, check for communication intents
+                    if hasattr(self, 'process_communication_intent') and webrtc_manager and client_id:
+                        logger.info("Checking for communication intent")
+                        communication_result = await rag_service.process_communication_intent(
+                            question=question,
+                            conversation_context=conversation_context or [],
+                            webrtc_manager=webrtc_manager,
+                            client_id=client_id
+                        )
+                        
+                        if communication_result:
+                            logger.info(f"Communication intent detected and processed: {communication_result['action']}")
+                            # If communication intent was processed, generate a response about it
+                            action = communication_result["action"]
+                            result = communication_result["result"]
+                            details = communication_result["details"]
+                            
+                            if action == "email":
+                                if result.get("status") == "success":
+                                    response = f"I've sent an email to {', '.join(details.get('to', []))} "
+                                    response += f"with the subject '{details.get('subject', 'No subject')}'. "
+                                    if "email_id" in result:
+                                        response += f"The email was sent successfully (ID: {result['email_id']})."
+                                    else:
+                                        response += "The email was sent successfully."
+                                else:
+                                    response = f"I wasn't able to send the email: {result.get('message', 'Unknown error')}."
+                                
+                                # Yield the response
+                                for char in response:
+                                    yield char
+                                return
+                                
+                            elif action == "meeting":
+                                if result.get("status") == "success":
+                                    meeting = result.get("meeting", {})
+                                    response = f"I've scheduled a meeting titled '{meeting.get('title', 'No title')}' "
+                                    response += f"for {meeting.get('start_time', 'the specified time')}. "
+                                    
+                                    if meeting.get("meet_link"):
+                                        response += f"Here's the Google Meet link: {meeting['meet_link']}. "
+                                    
+                                    response += f"I've sent invitations to {', '.join(details.get('attendees', []))}."
+                                else:
+                                    response = f"I wasn't able to schedule the meeting: {result.get('message', 'Unknown error')}."
+                                
+                                # Yield the response
+                                for char in response:
+                                    yield char
+                                return
+                    
+                    # If no communication intent, use the original method
+                    async for token in original_get_answer_with_chain(chain, question, conversation_context):
+                        yield token
+                        
+                except Exception as e:
+                    logger.error(f"Error in enhanced get_answer_with_chain: {str(e)}", exc_info=True)
+                    yield f"I encountered an error processing your request: {str(e)}"
+            
+            # Only replace if not already enhanced
+            if not getattr(rag_service, '_enhanced', False):
+                rag_service.get_answer_with_chain = types.MethodType(enhanced_get_answer_with_chain, rag_service)
+                rag_service._enhanced = True
+                logger.info("Enhanced RAG service with communication capabilities")
+
             # Stream Response Token-by-Token
             async for token in rag_service.get_answer_with_chain(
                 chain=chain,
                 question=message_data.get('message', ''),
-                conversation_context=context
+                conversation_context=context,
+                webrtc_manager=webrtc_manager,  # Pass the WebRTC manager for communication handling
+                client_id=client_id
             ):
                 chunk_number += 1
                 await self.send_json(websocket, {
@@ -470,7 +644,7 @@ class ConnectionManager:
                     "chunk_number": chunk_number,
                     "msg_id": msg_id
                 })
-                logger.info(f"Chunk {chunk_number} sent to client {client_id} and msg_id {msg_id}, content: {token}")
+                logger.debug(f"Chunk {chunk_number} sent to client {client_id} and msg_id {msg_id}")
 
             # Send end of stream message
             await self.send_json(websocket, {
@@ -485,7 +659,6 @@ class ConnectionManager:
             await self.handle_error(client_id, str(e))
         finally:
             logger.info(f"Processing time: {time.time() - start_time:.3f}s")
-    
     
     async def send_welcome_message(self, client_id: str):
         try:

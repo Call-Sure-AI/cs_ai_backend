@@ -66,6 +66,34 @@ class WebRTCManager:
         logger.info(f"Registered peer {peer_id} for company {company_id}")
         return peer
         
+    # async def unregister_peer(self, peer_id: str):
+    #     """Remove a peer connection"""
+    #     if peer_id in self.peers:
+    #         peer = self.peers[peer_id]
+    #         company_id = peer.company_id
+            
+    #         # Close any active audio streams for this peer
+    #         try:
+    #             await self.audio_handler.end_audio_stream(peer_id)
+    #         except Exception as e:
+    #             logger.warning(f"Error ending audio stream during peer unregistration: {str(e)}")
+            
+    #         # Unregister from connection manager if it's a client peer
+    #         if peer_id.startswith('client_') and self.connection_manager:
+    #             self.connection_manager.disconnect(peer_id)
+            
+    #         # Close peer connection
+    #         await peer.close()
+            
+    #         # Remove peer references
+    #         del self.peers[peer_id]
+    #         if company_id in self.company_peers:
+    #             self.company_peers[company_id].discard(peer_id)
+    #             if not self.company_peers[company_id]:
+    #                 del self.company_peers[company_id]
+                    
+    #         logger.info(f"Unregistered peer {peer_id}")
+            
     async def unregister_peer(self, peer_id: str):
         """Remove a peer connection"""
         if peer_id in self.peers:
@@ -80,10 +108,16 @@ class WebRTCManager:
             
             # Unregister from connection manager if it's a client peer
             if peer_id.startswith('client_') and self.connection_manager:
-                self.connection_manager.disconnect(peer_id)
+                try:
+                    self.connection_manager.disconnect(peer_id)
+                except Exception as e:
+                    logger.warning(f"Error disconnecting from connection manager: {str(e)}")
             
             # Close peer connection
-            await peer.close()
+            try:
+                await peer.close()
+            except Exception as e:
+                logger.warning(f"Error closing peer connection: {str(e)}")
             
             # Remove peer references
             del self.peers[peer_id]
@@ -93,7 +127,8 @@ class WebRTCManager:
                     del self.company_peers[company_id]
                     
             logger.info(f"Unregistered peer {peer_id}")
-            
+    
+    
     async def relay_signal(self, from_peer_id: str, to_peer_id: str, signal_data: dict):
         """Relay WebRTC signaling message between peers"""
         if to_peer_id in self.peers:
@@ -169,9 +204,163 @@ class WebRTCManager:
                 # Handle streaming text messages through connection manager
                 await self.process_streaming_message(peer_id, message_data)
                 
+    # async def process_streaming_message(self, peer_id: str, message_data: dict):
+    #     """Process streaming message using ConnectionManager"""
+    #     try:
+    #         if peer_id not in self.peers:
+    #             logger.warning(f"Message received for unknown peer: {peer_id}")
+    #             return
+                
+    #         peer = self.peers[peer_id]
+            
+    #         # Check if we have a connection manager
+    #         if not self.connection_manager:
+    #             logger.error("Connection manager not initialized")
+    #             await peer.send_message({
+    #                 "type": "error",
+    #                 "message": "Service not properly initialized"
+    #             })
+    #             return
+                
+    #         # Map peer to client ID if it's not already a client ID
+    #         client_id = peer_id
+    #         if not client_id.startswith('client_'):
+    #             # Generate a temporary client ID if we got a message from a non-client peer
+    #             client_id = f"client_{int(time.time() * 1000)}"
+    #             # Register the websocket with connection manager
+    #             await self.connection_manager.connect(peer.websocket, client_id)
+    #             self.connection_manager.client_companies[client_id] = peer.company_info
+    #             logger.info(f"Created temporary client ID {client_id} for peer {peer_id}")
+                
+    #         # Initialize agent resources if needed
+    #         company_id = peer.company_id
+            
+    #         # Check if the client already has agent resources
+    #         if client_id not in self.connection_manager.agent_resources:
+    #             # Get base agent
+    #             base_agent = await self.agent_manager.get_base_agent(company_id)
+    #             if not base_agent:
+    #                 logger.error(f"No base agent found for company {company_id}")
+    #                 await peer.send_message({
+    #                     "type": "error",
+    #                     "message": "No agent available"
+    #                 })
+    #                 return
+                    
+    #             # Initialize agent resources
+    #             success = await self.connection_manager.initialize_agent_resources(
+    #                 client_id,
+    #                 company_id,
+    #                 base_agent
+    #             )
+                
+    #             if not success:
+    #                 logger.error(f"Failed to initialize agent resources for {client_id}")
+    #                 await peer.send_message({
+    #                     "type": "error",
+    #                     "message": "Failed to initialize agent resources"
+    #                 })
+    #                 return
+                    
+    #             # Set active agent
+    #             self.connection_manager.active_agents[client_id] = base_agent['id']
+                    
+    #         # Process the message using connection manager
+    #         await self.connection_manager.process_streaming_message(client_id, message_data)
+            
+    #     except Exception as e:
+    #         logger.error(f"Error processing message stream: {str(e)}", exc_info=True)
+    #         if peer_id in self.peers:
+    #             peer = self.peers[peer_id]
+    #             await peer.send_message({
+    #                 "type": "error",
+    #                 "message": f"Error processing message: {str(e)}"
+    #             })
+                
+    async def handle_communication_request(
+        self,
+        client_id: str,
+        action: str,
+        params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Handle communication requests (email, meeting) from the client"""
+        try:
+            # First check if we have an agent manager
+            if not self.agent_manager:
+                logger.error("Agent manager not initialized for communication request")
+                return {
+                    "status": "error",
+                    "message": "Agent manager not initialized"
+                }
+            
+            # Get the current agent and company for this client
+            if client_id not in self.peers:
+                logger.error(f"Communication request for unknown peer: {client_id}")
+                return {
+                    "status": "error",
+                    "message": "Unknown client"
+                }
+                
+            peer = self.peers.get(client_id)
+            company_id = peer.company_id
+            
+            # Get the active agent ID for this client from connection manager
+            agent_id = self.connection_manager.active_agents.get(client_id)
+            if not agent_id:
+                # Try to get base agent
+                base_agent = await self.agent_manager.get_base_agent(company_id)
+                if not base_agent:
+                    logger.error(f"No agent found for communication request from {client_id}")
+                    return {
+                        "status": "error",
+                        "message": "No active agent available"
+                    }
+                agent_id = base_agent["id"]
+            
+            # Check the action type and handle it
+            logger.info(f"Handling {action} request for client {client_id} with agent {agent_id}")
+            
+            if action == "send_email":
+                return await self.agent_manager.send_email_from_agent(
+                    agent_id=agent_id,
+                    to=params.get("to", []),
+                    subject=params.get("subject", ""),
+                    body=params.get("body", ""),
+                    cc=params.get("cc"),
+                    bcc=params.get("bcc"),
+                    html_body=params.get("html_body"),
+                    reply_to=params.get("reply_to")
+                )
+            elif action == "schedule_meeting":
+                return await self.agent_manager.schedule_meeting_from_agent(
+                    agent_id=agent_id,
+                    title=params.get("title", ""),
+                    description=params.get("description", ""),
+                    start_time=params.get("start_time"),
+                    duration_minutes=params.get("duration_minutes", 30),
+                    timezone=params.get("timezone", "UTC"),
+                    attendees=params.get("attendees", []),
+                    additional_message=params.get("additional_message")
+                )
+            else:
+                logger.warning(f"Unknown communication action: {action}")
+                return {
+                    "status": "error",
+                    "message": f"Unknown action: {action}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error handling communication request: {str(e)}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"Failed to process communication request: {str(e)}"
+            }
+                
     async def process_streaming_message(self, peer_id: str, message_data: dict):
+        logger.debug(f"Processing streaming message for peer {peer_id} and data: {message_data}")
         """Process streaming message using ConnectionManager"""
         try:
+            logger.info(f"Processing streaming message for peer {peer_id} and data: {message_data}")
             if peer_id not in self.peers:
                 logger.warning(f"Message received for unknown peer: {peer_id}")
                 return
@@ -229,9 +418,14 @@ class WebRTCManager:
                     
                 # Set active agent
                 self.connection_manager.active_agents[client_id] = base_agent['id']
-                    
+            
             # Process the message using connection manager
-            await self.connection_manager.process_streaming_message(client_id, message_data)
+            # Pass this WebRTCManager instance and client_id for communication intent handling
+            await self.connection_manager.process_streaming_message(
+                client_id=client_id,
+                message_data=message_data,
+                webrtc_manager=self  # Pass self for communication intent handling
+            )
             
         except Exception as e:
             logger.error(f"Error processing message stream: {str(e)}", exc_info=True)
@@ -241,7 +435,9 @@ class WebRTCManager:
                     "type": "error",
                     "message": f"Error processing message: {str(e)}"
                 })
-                
+    
+    
+    
     def get_company_peers(self, company_id: str) -> list:
         """Get list of active peers for a company"""
         return list(self.company_peers.get(company_id, set()))

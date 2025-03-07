@@ -11,6 +11,7 @@ from routes.webrtc_handlers import router as webrtc_router
 # from routes.google_sheets_routes import router as google_sheets_router  
 # from routes.websocket_handlers import router as websocket_router
 from routes.admin_routes_handlers import router as admin_router
+from routes.communication_routes_handlers import router as communication_router
 
 app = FastAPI(
     title="AI Backend",
@@ -42,3 +43,8 @@ app.include_router(webrtc_router, prefix=f"{APP_PREFIX}/webrtc", tags=["WebRTC"]
 # app.include_router(google_sheets_router, prefix=f"{APP_PREFIX}/google_sheets", tags=["Google Sheets"])
 # app.include_router(websocket_router, prefix=f"{APP_PREFIX}/ws", tags=["websocket"])
 app.include_router(admin_router, prefix=f"{APP_PREFIX}/admin", tags=["Admin"])
+app.include_router(
+    communication_router,
+    prefix=f"{APP_PREFIX}/communication",
+    tags=["communication"]
+)
