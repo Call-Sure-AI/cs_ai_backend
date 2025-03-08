@@ -65,7 +65,7 @@ async def handle_incoming_call(request: Request):
         # For debugging, use the media-stream endpoint which has proper logging
         # Once confirmed working, switch back to webrtc endpoint
         # stream_url = f'wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}'
-        stream_url = f'wss://{host}/api/v1/twilio/media-stream'
+        stream_url = f'wss://{host}/api/v1/twilio/basic-test'
         logger.info(f"Setting up stream URL: {stream_url}")
         
         # Create TwiML response with stream
@@ -112,6 +112,40 @@ async def simple_test_call(request: Request):
         resp = VoiceResponse()
         resp.say('An error occurred during the test.')
         return resp.to_xml()
+    
+@router.websocket("/basic-test")
+async def basic_test(websocket: WebSocket):
+    """Super simple WebSocket test for Twilio"""
+    connection_id = str(uuid.uuid4())[:8]
+    
+    try:
+        logger.info(f"[{connection_id}] Basic test connection attempt")
+        await websocket.accept()
+        logger.info(f"[{connection_id}] WebSocket connection accepted")
+        
+        # Main message loop
+        while True:
+            message = await websocket.receive()
+            logger.info(f"[{connection_id}] Received message: {message}")
+            
+            if 'text' in message:
+                try:
+                    data = json.loads(message['text'])
+                    if data.get('event') == 'start':
+                        # Critical - respond to start event with connected message
+                        logger.info(f"[{connection_id}] Received START event")
+                        await websocket.send_text(json.dumps({
+                            "event": "connected",
+                            "protocol": "websocket",
+                            "version": "1.0.0"
+                        }))
+                        logger.info(f"[{connection_id}] Sent connected response")
+                except:
+                    pass
+    except Exception as e:
+        logger.error(f"[{connection_id}] Error: {str(e)}")
+    finally:
+        logger.info(f"[{connection_id}] Connection closed")
 
 @router.post("/test-incoming-call")
 async def test_incoming_call(request: Request):
