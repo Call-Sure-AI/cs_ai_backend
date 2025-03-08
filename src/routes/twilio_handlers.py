@@ -36,7 +36,7 @@ tts_service = TextToSpeechService()
 # In-memory storage to track active calls (in production, use Redis or a database)
 active_calls: Dict[str, Dict[str, Any]] = {}
 
-
+# Add to routes/twilio_handlers.py
 async def handle_ai_response(client_id: str, text: str) -> bool:
     """
     Handle AI response for a Twilio call by sending TwiML for speech synthesis
@@ -53,7 +53,18 @@ async def handle_ai_response(client_id: str, text: str) -> bool:
         
         # Create a Twilio TwiML response
         response = VoiceResponse()
+        
+        # Add the speech synthesis
         response.say(text, voice='Polly.Matthew', language='en-US')
+        
+        # IMPORTANT: After speech, add a <gather> tag to listen for input
+        # This keeps the call active waiting for user speech
+        gather = response.gather(
+            input='speech',
+            action='/api/v1/twilio/gather',
+            timeout=5,  # Wait 5 seconds for input
+            speech_timeout='auto'  # Automatically detect end of speech
+        )
         
         # For debugging, log the generated TwiML
         twiml = str(response)
@@ -61,7 +72,6 @@ async def handle_ai_response(client_id: str, text: str) -> bool:
         
         # In a production implementation, you would send this TwiML to Twilio
         # For example, using webhook responses or through the Twilio API
-        # For now, we'll just log it
         
         # Store the response in the active calls data
         if client_id not in active_calls:

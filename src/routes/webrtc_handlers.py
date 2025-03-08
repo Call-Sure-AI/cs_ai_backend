@@ -193,6 +193,10 @@ def initialize_app(app):
 #         except Exception as e:
 #             logger.error(f"Error during cleanup: {str(e)}")
 
+
+
+
+
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within WebRTC signaling endpoint"""
     connection_id = str(uuid.uuid4())[:8]
@@ -213,6 +217,12 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     is_processing = False
     last_processed_time = time.time()
     silence_threshold = 3.0  # 3 seconds of silence indicates end of user speech
+    
+    # Track if we've sent a welcome message
+    welcome_sent = False
+    last_activity_time = time.time()
+    max_inactivity = 60.0  # End call after 60 seconds of no activity
+    
     
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
@@ -315,21 +325,17 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     await asyncio.sleep(0.5)  # Small delay before retry
             
             is_processing = False
-                    
-        # Function to process messages with response buffering
+        
         async def process_buffered_message(manager, cid, msg_data):
+            """Process a message with buffer to avoid token-by-token transmission"""
             try:
-                # Get resources needed
+                # Get necessary resources
                 ws = manager.active_connections.get(cid)
                 if not ws or manager.websocket_is_closed(ws):
                     logger.warning(f"[{connection_id}] Client disconnected before processing")
                     return
                     
                 agent_res = manager.agent_resources.get(cid)
-                if not agent_res:
-                    logger.warning(f"[{connection_id}] No agent resources for client")
-                    return
-                    
                 chain = agent_res['chain']
                 rag_service = agent_res['rag_service']
                 
@@ -337,36 +343,60 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 conv = await manager._get_or_create_conversation(company_info['id'], cid)
                 context = await manager.agent_manager.get_conversation_context(conv['id'])
                 
-                # Process with RAG chain
-                buffer = ""
-                response_time = time.time()
-                msg_id = str(response_time)
-                
-                # Get answer from chain with buffering
-                async for token in rag_service.get_answer_with_chain(
-                    chain=chain,
-                    question=msg_data.get('message', ''),
-                    conversation_context=context
-                ):
-                    buffer += token
+                # Create a background task to process response in chunks
+                # This allows us to return faster and let the call continue while responding
+                async def process_response():
+                    buffer = ""
+                    response_time = time.time()
+                    msg_id = str(response_time)
                     
-                    # Only send when buffer has meaningful content or complete sentences
-                    if len(buffer) >= 60 or any(char in buffer[-2:] for char in ['.', '!', '?', '\n']):
-                        # For Twilio, we need to send text for speech synthesis
-                        if cid.startswith('twilio_'):
-                            await manager.handle_twilio_speech(cid, buffer)
+                    # Stream answer from AI with buffering to prevent token-by-token responses
+                    try:
+                        async for token in rag_service.get_answer_with_chain(
+                            chain=chain,
+                            question=msg_data.get('message', ''),
+                            conversation_context=context
+                        ):
+                            buffer += token
+                            
+                            # Only send when buffer has meaningful content or complete sentences
+                            should_send = (
+                                len(buffer) >= 60 or 
+                                any(char in buffer[-2:] for char in ['.', '!', '?', '\n'])
+                            )
+                            
+                            if should_send:
+                                if cid.startswith('twilio_'):
+                                    try:
+                                        from routes.twilio_handlers import handle_ai_response
+                                        await handle_ai_response(cid, buffer)
+                                    except Exception as e:
+                                        logger.error(f"Error in speech synthesis: {str(e)}")
+                                
+                                buffer = ""  # Clear buffer after sending
                         
-                        buffer = ""  # Clear buffer after sending
+                        # Send any remaining buffer content
+                        if buffer.strip():
+                            if cid.startswith('twilio_'):
+                                try:
+                                    from routes.twilio_handlers import handle_ai_response
+                                    await handle_ai_response(cid, buffer)
+                                except Exception as e:
+                                    logger.error(f"Error in speech synthesis: {str(e)}")
+                        
+                        logger.info(f"[{connection_id}] Complete response processed in {time.time() - response_time:.2f}s")
+                    except Exception as e:
+                        logger.error(f"[{connection_id}] Error processing response: {str(e)}")
                 
-                # Send any remaining buffer content
-                if buffer.strip():
-                    await manager.handle_twilio_speech(cid, buffer)
-                    
-                logger.info(f"[{connection_id}] Complete response processed in {time.time() - response_time:.2f}s")
+                # Start processing in the background
+                asyncio.create_task(process_response())
                 
+                # Return quickly to allow the call to continue
+                return True
             except Exception as e:
                 logger.error(f"[{connection_id}] Error in buffered message processing: {str(e)}")
-                raise
+                return False
+        
         
         # Main message processing loop
         while not websocket_closed:
@@ -375,6 +405,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
                 message_count += 1
                 last_message_time = time.time()
+                last_activity_time = time.time() 
                 
                 if message.get('type') == 'websocket.disconnect':
                     logger.info(f"[{connection_id}] Received disconnect message")
@@ -421,14 +452,17 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             await asyncio.sleep(0.5)
                             
                             # Send welcome message through AI pipeline
-                            welcome_data = {
-                                "type": "message",
-                                "message": "__SYSTEM_WELCOME__",
-                                "source": "twilio"
-                            }
+                            if not welcome_sent:
+                                welcome_data = {
+                                    "type": "message",
+                                    "message": "__SYSTEM_WELCOME__",
+                                    "source": "twilio"
+                                }
+                                
+                                # Process welcome message using the buffered approach
+                                await process_buffered_message(connection_manager, client_id, welcome_data)
+                                welcome_sent = True
                             
-                            # Process welcome message using the buffered approach
-                            await process_buffered_message(connection_manager, client_id, welcome_data)
                             
                         elif event == 'media':
                             # Media events with base64 payload
@@ -447,6 +481,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             # Process any remaining audio
                             await stt_service.process_final_buffer(client_id, handle_transcription)
                             websocket_closed = True
+                            logger.info(f"[{connection_id}] STOP event received - continuing to listen")
                             break
                             
                     except json.JSONDecodeError:
