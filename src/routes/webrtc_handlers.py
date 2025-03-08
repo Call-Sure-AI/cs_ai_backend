@@ -294,7 +294,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
                 elif 'text' in message:
                     # Parse text messages (control messages)
                     text_data = message['text']
-                    logger.info(f"[{connection_id}] Received text message: {text_data[:100]}...")
+                    # logger.info(f"[{connection_id}] Received text message: {text_data[:100]}...")
                     
                     try:
                         data = json.loads(text_data)
