@@ -256,10 +256,11 @@ async def handle_gather(
         # Log the generated TwiML
         twiml_response = resp.to_xml()
         logger.info(f"Generated gather TwiML: {twiml_response}")
-        
+
         # For debugging, also log specific details about the TwiML
         logger.info(f"Response type: {type(resp)}")
-        logger.info(f"Response contains Say verb: {'<Say>' in twiml_response}")
+        logger.info(f"Response contains Say verb: {len(resp.verbs) > 0 and resp.verbs[0].name == 'Say'}")
+        
         
         return Response(
             content=twiml_response,
