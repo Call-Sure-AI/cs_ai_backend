@@ -556,6 +556,7 @@ import time
 import asyncio
 
 
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -641,10 +642,16 @@ async def handle_gather(
     try:
         logger.info(f"Received speech from Twilio: {SpeechResult}")
 
-        # Retrieve WebRTC peer ID for this call
+        # Ensure manager is initialized
+        global manager
+        if manager is None:
+            logger.error("Connection manager not initialized!")
+            return Response(content="<Response><Say>System error occurred.</Say></Response>", media_type="application/xml")
+
+        # Retrieve WebRTC peer ID
         if CallSid not in active_calls:
             logger.warning(f"CallSid {CallSid} not found.")
-            return Response(content="<Response><Say>Sorry, we encountered an issue.</Say></Response>", media_type="application/xml")
+            return Response(content="<Response><Say>Call session not found.</Say></Response>", media_type="application/xml")
 
         client_id = active_calls[CallSid]["peer_id"]
 
@@ -652,7 +659,6 @@ async def handle_gather(
         message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
         await manager.process_streaming_message(client_id, message_data)
 
-        # Empty TwiML response (to keep call active without Twilio speaking again)
         return Response(content="<Response></Response>", media_type="application/xml")
 
     except Exception as e:

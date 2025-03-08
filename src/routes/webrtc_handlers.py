@@ -17,6 +17,7 @@ from utils.logger import setup_logging
 from config.settings import settings
 from database.models import Company, Agent
 import uuid
+from services.speech.tts_service import TextToSpeechService
 
 # Initialize router and logging
 router = APIRouter()
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Initialize services
 vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
+tts_service = TextToSpeechService()
 
 def initialize_app(app):
     """Initialize app state"""
@@ -403,13 +405,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         
         async def process_buffered_message(manager, client_id, msg_data):
             """
-            Process a message with buffering to avoid token-by-token responses.
             Converts AI-generated text into speech and sends via WebRTC.
-
-            Args:
-                manager: The connection manager instance.
-                client_id: The ID of the WebRTC client.
-                msg_data: The message data to process.
             """
             try:
                 ws = manager.active_connections.get(client_id)
@@ -429,10 +425,10 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
 
                 logger.info(f"Complete AI response: {buffer}")
 
-                # Convert AI response to audio using TTS
+                # ✅ Generate TTS audio
                 tts_audio = await tts_service.generate_audio(buffer)
 
-                # Send audio to WebRTC
+                # ✅ Send audio via WebRTC
                 if tts_audio:
                     await send_audio_to_webrtc(client_id, tts_audio)
 
