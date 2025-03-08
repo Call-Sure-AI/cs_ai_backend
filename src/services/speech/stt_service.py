@@ -19,8 +19,11 @@ class SpeechToTextService:
         self.active_sessions: Dict[str, Dict] = {}
         
         # Get Deepgram API key from environment variable or use a default for development
-        self.deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY", "your_deepgram_api_key_here")
+        self.deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY")
         self.deepgram_url = "https://api.deepgram.com/v1/listen"
+        if not self.deepgram_api_key:
+            logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
+        self.deepgram_api_key = "576fc98d7aa2edf6623c493ee540db34527ecc71"
         
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                  callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
@@ -73,23 +76,27 @@ class SpeechToTextService:
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Convert audio data to text using Deepgram"""
         try:
-            # Deepgram API requires specific headers
+            # Deepgram API requires specific headers with Token format
             headers = {
                 "Authorization": f"Token {self.deepgram_api_key}",
                 "Content-Type": "audio/x-mulaw",
             }
             
-            # Query parameters for Deepgram
+            # Build the URL with proper query parameters
             params = {
-                "model": "nova-2", # Use Nova-2 model for better accuracy
-                "sample_rate": 8000, # Twilio uses 8kHz audio
-                "encoding": "mulaw", # Twilio uses mulaw encoding
-                "channels": 1, # Mono audio
-                "detect_language": True,
-                "punctuate": True,
-                "diarize": False,
-                "smart_format": True,
+                "model": "nova-2",
+                "sample_rate": "8000",
+                "encoding": "mulaw",
+                "channels": "1",
+                "detect_language": "true",
+                "punctuate": "true",
+                "smart_format": "true"
             }
+            
+            # Construct the URL properly with urllib
+            from urllib.parse import urlencode
+            query_string = urlencode(params)
+            url = f"{self.deepgram_url}?{query_string}"
             
             # Log the request
             logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram for session {session_id}")
@@ -97,7 +104,7 @@ class SpeechToTextService:
             # Make the API request to Deepgram
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{self.deepgram_url}?{self._format_params(params)}",
+                    url,
                     headers=headers,
                     data=audio_data,
                     timeout=10  # 10 second timeout
