@@ -2,6 +2,11 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
 
+from managers.connection_manager import ConnectionManager
+from database.config import get_db
+
+
+
 from config.settings import ALLOWED_ORIGINS, DEBUG, APP_PREFIX
 # from routes.ai_routes_handlers import ai_router
 # from routes.voice_routes_handlers import voice_router
@@ -44,3 +49,15 @@ app.include_router(webrtc_router, prefix=f"{APP_PREFIX}/webrtc", tags=["WebRTC"]
 # app.include_router(websocket_router, prefix=f"{APP_PREFIX}/ws", tags=["websocket"])
 app.include_router(admin_router, prefix=f"{APP_PREFIX}/admin", tags=["Admin"])
 app.include_router(twilio_router, prefix=f"{APP_PREFIX}/twilio", tags=["Twilio"])
+
+
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Initialize connection manager
+    db_session = next(get_db())
+    app.state.connection_manager = ConnectionManager(db_session)
+    
+    # Log successful initialization
+    print("Connection manager initialized and stored in app state")

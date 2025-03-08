@@ -35,6 +35,7 @@ async def handle_incoming_call(request: Request):
         start = Start()
         
         # Create WebSocket connection for stream
+        # Make sure path is correct!
         stream_url = f'wss://{request.base_url.hostname}/api/v1/twilio/stream'
         logger.info(f"Setting up stream URL: {stream_url}")
         
@@ -46,7 +47,7 @@ async def handle_incoming_call(request: Request):
         logger.info("TwiML response generated successfully")
         
         return resp.to_xml()
-        
+    
     except Exception as e:
         logger.error(f"Error handling incoming call: {str(e)}", exc_info=True)
         logger.debug(f"Request data during error: {await request.body()}")
@@ -54,6 +55,7 @@ async def handle_incoming_call(request: Request):
         resp = VoiceResponse()
         resp.say('An error occurred. Please try again later.')
         return resp.to_xml()
+
 
 @router.websocket("/stream")
 async def handle_stream(websocket: WebSocket):
@@ -64,19 +66,50 @@ async def handle_stream(websocket: WebSocket):
     logger.info(f"New WebSocket connection attempt from {websocket.client.host}")
     
     try:
+        # Get connection manager from app state
         if not manager:
-            logger.debug("Initializing connection manager from app state")
+            logger.info("Initializing connection manager from app state")
             manager = websocket.app.state.connection_manager
+            if not manager:
+                logger.critical("Connection manager not found in app state!")
+                await websocket.close(code=1011)
+                return
         
         await websocket.accept()
-        logger.debug("WebSocket connection accepted")
+        logger.info("WebSocket connection accepted")
         
         # Generate client ID for this call
         client_id = f"twilio_{str(uuid.uuid4())}"
         logger.info(f"Generated new client ID: {client_id}")
         
+        # Initialize mock company for Twilio calls
+        # This is important since your connection manager expects company info
+        company_info = {
+            "id": "twilio_company",
+            "name": "Twilio Caller"
+        }
+        manager.client_companies[client_id] = company_info
+        
+        # Connect client to manager
         await manager.connect(websocket, client_id)
-        logger.debug(f"Client {client_id} connected to manager")
+        logger.info(f"Client {client_id} connected to manager")
+        
+        # Initialize agent resources for Twilio client
+        # Get a default agent for processing
+        agent = await manager.agent_manager.get_base_agent(company_info["id"])
+        if not agent:
+            # Create a temporary agent if none exists
+            agent = {
+                "id": "twilio_agent",
+                "name": "Twilio Assistant"
+            }
+        
+        # Initialize agent resources for this client
+        success = await manager.initialize_agent_resources(client_id, company_info["id"], agent)
+        if not success:
+            logger.error(f"Failed to initialize agent resources for {client_id}")
+            await websocket.close(code=1011)
+            return
         
         message_count = 0
         while True:
@@ -85,25 +118,30 @@ async def handle_stream(websocket: WebSocket):
             message_count += 1
             
             if message_count % 100 == 0:  # Log every 100th message to avoid spam
-                logger.debug(f"Received audio data chunk #{message_count} for client {client_id}")
+                logger.info(f"Received audio data chunk #{message_count} for client {client_id}")
             
             # Process audio through your existing pipeline
+            # We're simulating a text message since your manager expects a message
             message_data = {
-                "type": "audio",
-                "content": data,
+                "type": "message",
+                "message": f"Audio data chunk #{message_count}",  # This would be the transcribed audio in production
                 "source": "twilio"
             }
             
+            # Process using your existing connection manager
             await manager.process_streaming_message(client_id, message_data)
             
     except Exception as e:
         logger.error(f"Error in stream handler for client {client_id}: {str(e)}", exc_info=True)
-        logger.debug(f"WebSocket connection details during error: {websocket.client}")
+        logger.info(f"WebSocket connection details during error: {websocket.client}")
     finally:
-        if client_id:
+        if client_id and manager:
             logger.info(f"Disconnecting client {client_id}")
+            # Clean up resources
+            await manager.cleanup_agent_resources(client_id)
             manager.disconnect(client_id)
-            logger.debug(f"Total messages processed for client {client_id}: {message_count}")
+            logger.info(f"Total messages processed for client {client_id}: {message_count}")
+
 
 @router.post("/call-status")
 async def handle_call_status(
@@ -129,7 +167,7 @@ async def handle_call_status(
         }
         
         if call_details:
-            logger.debug(f"Additional call details for {CallSid}: {json.dumps(call_details)}")
+            logger.info(f"Additional call details for {CallSid}: {json.dumps(call_details)}")
             
         # Log specific status transitions
         if CallStatus == "completed":
@@ -149,7 +187,7 @@ async def handle_call_status(
 @router.on_event("startup")
 async def startup_event():
     logger.info("Twilio routes initialized")
-    logger.debug(f"Using Twilio account: {settings.TWILIO_ACCOUNT_SID}")
+    logger.info(f"Using Twilio account: {settings.TWILIO_ACCOUNT_SID}")
 
 @router.on_event("shutdown")
 async def shutdown_event():
