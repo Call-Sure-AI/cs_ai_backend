@@ -203,12 +203,16 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     client_id = peer_id
     websocket_closed = False
     
-    # Speech recognition variables
+    # Initialize the STT service for this connection
     stt_service = SpeechToTextService()
-    silence_threshold = 3.0  # 3 seconds of silence indicates end of user speech
-    last_transcription_time = time.time()
-    is_collecting_audio = False
+    buffer_reset_interval = 30  # Reset buffer every 30 seconds if no speech detected
+    last_buffer_reset = time.time()
+    last_message_time = time.time()
+    
+    # Keep track of ongoing transcription/response
     is_processing = False
+    last_processed_time = time.time()
+    silence_threshold = 3.0  # 3 seconds of silence indicates end of user speech
     
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
@@ -237,7 +241,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         # Set company info from the database
         company_info = {
             "id": company.id,
-            "name": company.name
+            "name": company.name or "Customer Support"  # Fallback name
         }
         
         connection_manager.client_companies[client_id] = company_info
@@ -270,40 +274,119 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             websocket_closed = True
             return
         
-        # Define the callback function to handle transcriptions
-        async def handle_transcription(session_id, text):
-            nonlocal last_transcription_time
+        # Define callback function for handling transcribed speech
+        async def handle_transcription(session_id, transcribed_text):
+            nonlocal is_processing, last_processed_time
             
-            logger.info(f"[{connection_id}] Received transcription: {text}")
-            last_transcription_time = time.time()
+            logger.info(f"[{connection_id}] Transcription received: '{transcribed_text}'")
             
-            # Process using connection manager
-            message_data = {
-                "type": "message",
-                "message": text,
-                "source": "twilio"
-            }
+            # Only process if not already processing and meaningful text received
+            if not is_processing and transcribed_text and transcribed_text.strip():
+                is_processing = True
+                last_processed_time = time.time()
+                
+                # Process using connection manager
+                message_data = {
+                    "type": "message",
+                    "message": transcribed_text,
+                    "source": "twilio"
+                }
+                
+                # Use a separate task to avoid blocking the main loop
+                asyncio.create_task(
+                    process_message_with_retries(connection_manager, client_id, message_data)
+                )
+        
+        # Helper function to process messages with retries
+        async def process_message_with_retries(manager, cid, msg_data, max_retries=3):
+            nonlocal is_processing
+            retries = 0
+            success = False
             
-            # Run as a separate task to avoid blocking
-            asyncio.create_task(
-                connection_manager.process_streaming_message(client_id, message_data)
-            )
+            while retries < max_retries and not success:
+                try:
+                    # Use buffered message processing to prevent token-by-token responses
+                    # that might overwhelm the connection
+                    await process_buffered_message(manager, cid, msg_data)
+                    success = True
+                except Exception as e:
+                    retries += 1
+                    logger.error(f"[{connection_id}] Error processing message (retry {retries}): {str(e)}")
+                    await asyncio.sleep(0.5)  # Small delay before retry
+            
+            is_processing = False
+                    
+        # Function to process messages with response buffering
+        async def process_buffered_message(manager, cid, msg_data):
+            try:
+                # Get resources needed
+                ws = manager.active_connections.get(cid)
+                if not ws or manager.websocket_is_closed(ws):
+                    logger.warning(f"[{connection_id}] Client disconnected before processing")
+                    return
+                    
+                agent_res = manager.agent_resources.get(cid)
+                if not agent_res:
+                    logger.warning(f"[{connection_id}] No agent resources for client")
+                    return
+                    
+                chain = agent_res['chain']
+                rag_service = agent_res['rag_service']
+                
+                # Get conversation context
+                conv = await manager._get_or_create_conversation(company_info['id'], cid)
+                context = await manager.agent_manager.get_conversation_context(conv['id'])
+                
+                # Process with RAG chain
+                buffer = ""
+                response_time = time.time()
+                msg_id = str(response_time)
+                
+                # Get answer from chain with buffering
+                async for token in rag_service.get_answer_with_chain(
+                    chain=chain,
+                    question=msg_data.get('message', ''),
+                    conversation_context=context
+                ):
+                    buffer += token
+                    
+                    # Only send when buffer has meaningful content or complete sentences
+                    if len(buffer) >= 60 or any(char in buffer[-2:] for char in ['.', '!', '?', '\n']):
+                        # For Twilio, we need to send text for speech synthesis
+                        if cid.startswith('twilio_'):
+                            await manager.handle_twilio_speech(cid, buffer)
+                        
+                        buffer = ""  # Clear buffer after sending
+                
+                # Send any remaining buffer content
+                if buffer.strip():
+                    await manager.handle_twilio_speech(cid, buffer)
+                    
+                logger.info(f"[{connection_id}] Complete response processed in {time.time() - response_time:.2f}s")
+                
+            except Exception as e:
+                logger.error(f"[{connection_id}] Error in buffered message processing: {str(e)}")
+                raise
         
         # Main message processing loop
         while not websocket_closed:
             try:
-                # Try to receive message with a timeout for silence detection
+                # Set a short timeout to allow for regular checking of silence
                 message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
                 message_count += 1
+                last_message_time = time.time()
                 
-                current_time = time.time()
+                if message.get('type') == 'websocket.disconnect':
+                    logger.info(f"[{connection_id}] Received disconnect message")
+                    websocket_closed = True
+                    break
                 
                 if 'bytes' in message:
-                    # Binary data (audio chunks)
+                    # Binary audio data
                     audio_data = message['bytes']
                     audio_chunks += 1
                     
-                    # Process the audio through STT service
+                    # Process audio through STT service
                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
                     
                     # Log occasionally to reduce verbosity
@@ -319,16 +402,13 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         event = data.get('event')
                         
                         if event == 'start':
-                            # Extract stream and call information
-                            stream_sid = data.get('streamSid')
+                            # Extract call information
                             call_sid = data.get('start', {}).get('callSid') or data.get('callSid')
                             
                             if call_sid:
                                 logger.info(f"[{connection_id}] Start event for call SID: {call_sid}")
                             
-                            # CRITICAL: Must respond to start event with connected message
-                            logger.info(f"[{connection_id}] START event received: {json.dumps(data)}")
-                            
+                            # CRITICAL: Respond to start event with connected message immediately
                             await websocket.send_text(json.dumps({
                                 "event": "connected",
                                 "protocol": "websocket",
@@ -337,19 +417,21 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             logger.info(f"[{connection_id}] Sent connected response")
                             connected = True
                             
-                            # Add a small delay to stabilize the connection
+                            # Add a small delay before sending welcome
                             await asyncio.sleep(0.5)
                             
-                            # Send welcome message
+                            # Send welcome message through AI pipeline
                             welcome_data = {
                                 "type": "message",
                                 "message": "__SYSTEM_WELCOME__",
                                 "source": "twilio"
                             }
-                            await connection_manager.process_streaming_message(client_id, welcome_data)
+                            
+                            # Process welcome message using the buffered approach
+                            await process_buffered_message(connection_manager, client_id, welcome_data)
                             
                         elif event == 'media':
-                            # Handle Twilio media events with base64-encoded audio
+                            # Media events with base64 payload
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 # Convert base64 payload to audio data
@@ -357,51 +439,59 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
                                 
                                 if audio_data:
-                                    # Process through STT service
                                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
                                     audio_chunks += 1
                             
                         elif event == 'stop':
-                            logger.info(f"[{connection_id}] STOP event received: {json.dumps(data)}")
-                            # Process any remaining audio before closing
+                            logger.info(f"[{connection_id}] STOP event received")
+                            # Process any remaining audio
                             await stt_service.process_final_buffer(client_id, handle_transcription)
-                            # Clean exit
                             websocket_closed = True
                             break
-                        
-                        elif event == 'mark':
-                            logger.info(f"[{connection_id}] Mark event: {json.dumps(data)}")
-                            
-                        else:
-                            logger.info(f"[{connection_id}] Unknown event type: {event}")
                             
                     except json.JSONDecodeError:
-                        logger.warning(f"[{connection_id}] Non-JSON text received: {text_data[:50]}...")
+                        logger.warning(f"[{connection_id}] Non-JSON text received")
                 
-                elif message.get('type') == 'websocket.disconnect':
-                    logger.info(f"[{connection_id}] Received disconnect message")
+                # Check if we should process accumulated audio due to silence
+                current_time = time.time()
+                
+                # Check for prolonged silence
+                is_silent = await stt_service.detect_silence(client_id, silence_threshold)
+                
+                if is_silent and not is_processing and (current_time - last_processed_time) > silence_threshold:
+                    # Process any accumulated audio if we have enough data
                     await stt_service.process_final_buffer(client_id, handle_transcription)
-                    websocket_closed = True
-                    break
+                    last_processed_time = current_time
+                
+                # Periodically reset buffer if no speech is detected for a long time
+                if (current_time - last_buffer_reset) > buffer_reset_interval:
+                    # Reset the audio buffer to prevent accumulation of background noise
+                    if not is_processing:
+                        stt_service.clear_buffer(client_id)
+                        last_buffer_reset = current_time
+                        logger.info(f"[{connection_id}] Reset audio buffer due to inactivity")
                 
             except asyncio.TimeoutError:
-                # Check for silence (no new transcriptions)
+                # Periodically check client connection and silence
                 current_time = time.time()
-                is_silence = await stt_service.detect_silence(client_id, silence_threshold)
                 
-                if is_silence:
-                    # Process any accumulated audio that hasn't been processed yet
+                # Check for silence to process accumulated audio
+                is_silent = await stt_service.detect_silence(client_id, silence_threshold)
+                
+                if is_silent and not is_processing and audio_chunks > 0:
+                    # Process any accumulated audio
                     await stt_service.process_final_buffer(client_id, handle_transcription)
                 
-                # Check if the WebSocket is still connected
-                try:
-                    if connected:
-                        ping_data = json.dumps({"type": "ping"})
-                        await websocket.send_text(ping_data)
-                except Exception as e:
-                    logger.warning(f"[{connection_id}] Connection appears closed: {str(e)}")
-                    websocket_closed = True
-                    break
+                # Check if connection is still alive
+                if (current_time - last_message_time) > 10.0:  # 10 second connection check
+                    try:
+                        if connected:
+                            ping_data = json.dumps({"type": "ping"})
+                            await websocket.send_text(ping_data)
+                    except Exception as e:
+                        logger.warning(f"[{connection_id}] Connection appears closed: {str(e)}")
+                        websocket_closed = True
+                        break
                     
             except Exception as e:
                 if "disconnect" in str(e).lower() or "closed" in str(e).lower():
@@ -410,9 +500,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     break
                 else:
                     logger.error(f"[{connection_id}] Error processing message: {str(e)}")
-                    if "receive" in str(e) and "disconnect" in str(e):
-                        websocket_closed = True
-                        break
     
     except Exception as e:
         logger.error(f"[{connection_id}] Error in Twilio Media Stream handler: {str(e)}", exc_info=True)
@@ -429,7 +516,8 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-    
+        
+         
         
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
 async def signaling_endpoint(

@@ -203,3 +203,11 @@ class SpeechToTextService:
         last_activity = self.active_sessions[session_id]["last_activity"]
         
         return (current_time - last_activity) >= silence_threshold_sec
+    
+    def clear_buffer(self, session_id: str):
+        """Clear the audio buffer for a specific session"""
+        if session_id in self.active_sessions:
+            self.active_sessions[session_id]["buffer"] = bytearray()
+            self.active_sessions[session_id]["chunk_count"] = 0
+            return True
+        return False
