@@ -8,7 +8,7 @@ import uuid
 from managers.connection_manager import ConnectionManager
 from config.settings import settings
 
-router = APIRouter(prefix="/api/twilio", tags=["twilio"])
+router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Initialize Twilio client
