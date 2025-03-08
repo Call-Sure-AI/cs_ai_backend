@@ -192,7 +192,6 @@ def initialize_app(app):
 #         except Exception as e:
 #             logger.error(f"Error during cleanup: {str(e)}")
 
-
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
     """Handler for Twilio Media Streams within WebRTC signaling endpoint"""
     connection_id = str(uuid.uuid4())[:8]
@@ -201,6 +200,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
     call_sid = None
     connected = False
     client_id = peer_id
+    websocket_closed = False
     
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
@@ -215,6 +215,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
         if not connection_manager:
             logger.error(f"[{connection_id}] Connection manager not found in app state!")
             await websocket.close(code=1011)
+            websocket_closed = True
             return
             
         # Initialize mock company for Twilio calls
@@ -241,109 +242,141 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
         if not success:
             logger.error(f"[{connection_id}] Failed to initialize agent resources")
             await websocket.close(code=1011)
+            websocket_closed = True
             return
             
         # Buffer for audio processing
         audio_buffer = bytearray()
         
         # Main message processing loop
-        while True:
-            message = await websocket.receive()
-            message_count += 1
-            
-            if 'bytes' in message:
-                # Binary data (audio chunks)
-                audio_data = message['bytes']
-                audio_chunks += 1
+        while not websocket_closed:
+            try:
+                # Try to receive message with a timeout to catch disconnections
+                message = await asyncio.wait_for(websocket.receive(), timeout=5.0)
+                message_count += 1
                 
-                if audio_chunks == 1 or audio_chunks % 100 == 0:
-                    logger.info(f"[{connection_id}] Received audio chunk #{audio_chunks}, size: {len(audio_data)} bytes")
-                
-                # Accumulate audio data for processing
-                audio_buffer.extend(audio_data)
-                
-                # Process audio if we have accumulated enough (e.g., every 5 seconds of speech)
-                # This would be approximately 100 audio chunks at Twilio's default rate
-                if audio_chunks % 100 == 0 and connected:
-                    # Here you would normally send the audio to a speech-to-text service
-                    # For now, we'll simulate with a simple message
+                if 'bytes' in message:
+                    # Binary data (audio chunks)
+                    audio_data = message['bytes']
+                    audio_chunks += 1
                     
-                    # This would be replaced with actual transcription in production
-                    # In a real implementation, you would use a speech-to-text service here
-                    transcribed_text = f"Simulated speech recognition output for audio chunks {audio_chunks-100} to {audio_chunks}"
-                    logger.info(f"[{connection_id}] Transcribed text: {transcribed_text}")
+                    if audio_chunks == 1 or audio_chunks % 100 == 0:
+                        logger.info(f"[{connection_id}] Received audio chunk #{audio_chunks}, size: {len(audio_data)} bytes")
                     
-                    # Process the transcribed text through your AI system
-                    message_data = {
-                        "type": "message",
-                        "message": transcribed_text,
-                        "source": "twilio"
-                    }
+                    # Accumulate audio data for processing
+                    audio_buffer.extend(audio_data)
                     
-                    # Process using connection manager which will send to AI system
-                    # This will trigger the streaming response that gets converted to speech
-                    await connection_manager.process_streaming_message(client_id, message_data)
-                    
-                    # Clear the buffer after processing
-                    audio_buffer = bytearray()
-            
-            elif 'text' in message:
-                # Parse text messages (control messages)
-                text_data = message['text']
-                logger.info(f"[{connection_id}] Received text message: {text_data[:100]}...")
-                
-                try:
-                    data = json.loads(text_data)
-                    event = data.get('event')
-                    
-                    if event == 'start':
-                        # Extract stream and call information
-                        stream_sid = data.get('streamSid')
-                        # Twilio sometimes puts callSid in different locations
-                        call_sid = data.get('start', {}).get('callSid') or data.get('callSid')
+                    # Process audio if we have accumulated enough (e.g., every 5 seconds of speech)
+                    # This would be approximately 100 audio chunks at Twilio's default rate
+                    if audio_chunks % 100 == 0 and connected:
+                        # Here you would normally send the audio to a speech-to-text service
+                        # For now, we'll simulate with a simple message
                         
-                        if call_sid:
-                            logger.info(f"[{connection_id}] Start event for call SID: {call_sid}")
+                        # This would be replaced with actual transcription in production
+                        # In a real implementation, you would use a speech-to-text service here
+                        transcribed_text = f"Simulated speech recognition output for audio chunks {audio_chunks-100} to {audio_chunks}"
+                        logger.info(f"[{connection_id}] Transcribed text: {transcribed_text}")
                         
-                        # CRITICAL: Must respond to start event with connected message
-                        logger.info(f"[{connection_id}] START event received: {json.dumps(data)}")
-                        
-                        await websocket.send_text(json.dumps({
-                            "event": "connected",
-                            "protocol": "websocket",
-                            "version": "1.0.0"
-                        }))
-                        logger.info(f"[{connection_id}] Sent connected response")
-                        connected = True
-                        
-                        # Send welcome message through AI pipeline
-                        # This creates a better user experience with an immediate response
-                        welcome_data = {
+                        # Process the transcribed text through your AI system
+                        message_data = {
                             "type": "message",
-                            "message": "__SYSTEM_WELCOME__",  # Special token the AI can recognize
+                            "message": transcribed_text,
                             "source": "twilio"
                         }
-                        await connection_manager.process_streaming_message(client_id, welcome_data)
                         
-                    elif event == 'media':
-                        # Media events contain metadata about the audio
-                        track = data.get('media', {}).get('track')
-                        if track == 'inbound' and message_count <= 10:
-                            logger.info(f"[{connection_id}] Inbound media event: {json.dumps(data)}")
+                        # Process using connection manager which will send to AI system
+                        # This will trigger the streaming response that gets converted to speech
+                        await connection_manager.process_streaming_message(client_id, message_data)
                         
-                    elif event == 'stop':
-                        logger.info(f"[{connection_id}] STOP event received: {json.dumps(data)}")
-                        # Clean exit
-                        break
+                        # Clear the buffer after processing
+                        audio_buffer = bytearray()
+                
+                elif 'text' in message:
+                    # Parse text messages (control messages)
+                    text_data = message['text']
+                    logger.info(f"[{connection_id}] Received text message: {text_data[:100]}...")
                     
-                    elif event == 'mark':
-                        logger.info(f"[{connection_id}] Mark event: {json.dumps(data)}")
+                    try:
+                        data = json.loads(text_data)
+                        event = data.get('event')
                         
-                    else:
-                        logger.info(f"[{connection_id}] Unknown event type: {event}")
+                        if event == 'start':
+                            # Extract stream and call information
+                            stream_sid = data.get('streamSid')
+                            # Twilio sometimes puts callSid in different locations
+                            call_sid = data.get('start', {}).get('callSid') or data.get('callSid')
+                            
+                            if call_sid:
+                                logger.info(f"[{connection_id}] Start event for call SID: {call_sid}")
+                            
+                            # CRITICAL: Must respond to start event with connected message
+                            logger.info(f"[{connection_id}] START event received: {json.dumps(data)}")
+                            
+                            await websocket.send_text(json.dumps({
+                                "event": "connected",
+                                "protocol": "websocket",
+                                "version": "1.0.0"
+                            }))
+                            logger.info(f"[{connection_id}] Sent connected response")
+                            connected = True
+                            
+                            # Send welcome message through AI pipeline
+                            # This creates a better user experience with an immediate response
+                            welcome_data = {
+                                "type": "message",
+                                "message": "__SYSTEM_WELCOME__",  # Special token the AI can recognize
+                                "source": "twilio"
+                            }
+                            await connection_manager.process_streaming_message(client_id, welcome_data)
+                            
+                        elif event == 'media':
+                            # Media events contain metadata about the audio
+                            track = data.get('media', {}).get('track')
+                            if track == 'inbound' and message_count <= 10:
+                                logger.info(f"[{connection_id}] Inbound media event: {json.dumps(data)}")
+                            
+                        elif event == 'stop':
+                            logger.info(f"[{connection_id}] STOP event received: {json.dumps(data)}")
+                            # Clean exit
+                            websocket_closed = True
+                            break
                         
-                except json.JSONDecodeError:
-                    logger.warning(f"[{connection_id}] Non-JSON text received: {text_data[:50]}...")
+                        elif event == 'mark':
+                            logger.info(f"[{connection_id}] Mark event: {json.dumps(data)}")
+                            
+                        else:
+                            logger.info(f"[{connection_id}] Unknown event type: {event}")
+                            
+                    except json.JSONDecodeError:
+                        logger.warning(f"[{connection_id}] Non-JSON text received: {text_data[:50]}...")
+                
+                elif message.get('type') == 'websocket.disconnect':
+                    logger.info(f"[{connection_id}] Received disconnect message")
+                    websocket_closed = True
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if the WebSocket is still connected by sending a ping
+                try:
+                    ping_data = json.dumps({"type": "ping"})
+                    await websocket.send_text(ping_data)
+                    logger.debug(f"[{connection_id}] Sent ping to check connection")
+                except Exception as e:
+                    logger.warning(f"[{connection_id}] Connection appears closed: {str(e)}")
+                    websocket_closed = True
+                    break
+                    
+            except Exception as e:
+                if "disconnect" in str(e).lower() or "closed" in str(e).lower():
+                    logger.info(f"[{connection_id}] WebSocket disconnected: {str(e)}")
+                    websocket_closed = True
+                    break
+                else:
+                    logger.error(f"[{connection_id}] Error processing message: {str(e)}")
+                    # Continue the loop unless it's a critical error
+                    if "receive" in str(e) and "disconnect" in str(e):
+                        websocket_closed = True
+                        break
     
     except Exception as e:
         logger.error(f"[{connection_id}] Error in Twilio Media Stream handler: {str(e)}", exc_info=True)
@@ -351,11 +384,16 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
         # Clean up resources
         if client_id and webrtc_manager.connection_manager:
             logger.info(f"[{connection_id}] Disconnecting client {client_id}")
-            await webrtc_manager.connection_manager.cleanup_agent_resources(client_id)
-            webrtc_manager.connection_manager.disconnect(client_id)
+            try:
+                await webrtc_manager.connection_manager.cleanup_agent_resources(client_id)
+                webrtc_manager.connection_manager.disconnect(client_id)
+            except Exception as e:
+                logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-
+        
+        
+        
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
 async def signaling_endpoint(
     websocket: WebSocket,
