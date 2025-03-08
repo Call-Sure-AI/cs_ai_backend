@@ -245,6 +245,7 @@ async def create_agent_with_documents(
             name=name,
             type=type.lower(),
             company_id=company_id,
+            user_id=company_id,
             prompt=prompt,
             active=True
         )
