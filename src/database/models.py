@@ -39,6 +39,7 @@ class Company(Base):
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=False)
     name = Column(String(255), nullable=False)
     api_key = Column(String(255), unique=True, nullable=False)
     
@@ -164,6 +165,7 @@ class Agent(Base):
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=False)
     name = Column(String(255), nullable=False)
     type = Column(Enum(AgentType), nullable=False)
     company_id = Column(String, ForeignKey('Company.id'))
