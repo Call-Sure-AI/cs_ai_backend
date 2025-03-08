@@ -180,6 +180,67 @@ async def handle_incoming_call(request: Request):
         )
 
 
+@router.post("/gather")
+async def handle_gather(
+    request: Request,
+    SpeechResult: Optional[str] = Form(None),
+    CallSid: str = Form(...),
+):
+    """Handle speech recognition results from Twilio Gather verb"""
+    try:
+        logger.info(f"Received speech from Twilio: {SpeechResult}")
+        
+        # Get form data
+        form_data = await request.form()
+        logger.info(f"Gather form data: {dict(form_data)}")
+        
+        # If we have a result, process it
+        if SpeechResult:
+            # Create a response
+            resp = VoiceResponse()
+            
+            # Get the associated client ID
+            client_id = None
+            for call_sid, data in active_calls.items():
+                if call_sid == CallSid:
+                    client_id = data.get("peer_id")
+                    break
+                    
+            if client_id:
+                # Create a new Stream to continue listening
+                stream_url = data.get("stream_url")
+                if stream_url:
+                    start = Start()
+                    start.stream(url=stream_url, track="both")
+                    resp.append(start)
+                
+                # Add a new Gather to continue listening
+                gather = resp.gather(input='speech', timeout=15, action='/api/v1/twilio/gather')
+                
+                return Response(
+                    content=resp.to_xml(),
+                    media_type="application/xml"
+                )
+            
+        # Default response if no processing happened
+        resp = VoiceResponse()
+        gather = resp.gather(input='speech', timeout=15, action='/api/v1/twilio/gather')
+        
+        return Response(
+            content=resp.to_xml(),
+            media_type="application/xml"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
+        resp = VoiceResponse()
+        resp.say("I'm sorry, we encountered an error processing your request.")
+        return Response(
+            content=resp.to_xml(),
+            media_type="application/xml"
+        )
+
+
 
 @router.post("/test-incoming-call")
 async def test_incoming_call(request: Request):

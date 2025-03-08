@@ -24,21 +24,24 @@ class RAGService:
         )
         
         # Custom QA prompt template
-        self.qa_template = """You are a helpful AI assistant. Use the following pieces of context to answer the question. 
-        If the context contains relevant information, provide a detailed and accurate response.
-        If the context doesn't contain relevant information, simply state that you don't have information about that specific topic.
+        self.qa_template = """You are a helpful AI assistant for a customer support line. Use the following pieces of context to answer the question.
+            If the context contains relevant information, provide a detailed and accurate response.
+            If the context doesn't contain relevant information, respond in a helpful, friendly way without mentioning the lack of context.
+
+            Context: {context}
+
+            Question: {question}
+
+            Instructions:
+            1. Base your answer ONLY on the provided context when relevant
+            2. Be specific and cite information from the context when possible
+            3. If the context is not relevant, provide a general helpful response as a customer service agent
+            4. Maintain a helpful and friendly conversational tone
+            5. Keep responses concise and to the point
+            6. If the user is simply saying hello, greet them warmly and ask how you can help
+
+            Answer: """
         
-        Context: {context}
-        
-        Question: {question}
-        
-        Instructions:
-        1. Base your answer ONLY on the provided context
-        2. Be specific and cite information from the context
-        3. If the context is relevant but incomplete, mention what is known while acknowledging limitations
-        4. Maintain a helpful and informative tone
-        
-        Answer: """
         
         self.qa_prompt = PromptTemplate(
             template=self.qa_template,
@@ -149,7 +152,7 @@ class RAGService:
             # Handle special system commands
             if question == "__SYSTEM_WELCOME__":
                 # Yield a friendly welcome message instead of querying the knowledge base
-                welcome_message = f"Hello! Welcome to {company_name}. I'm your AI voice assistant. How may I help you today?"
+                welcome_message = f"Hello! Welcome to Callsue AI. I'm your AI voice assistant. How may I help you today?"
                 
                 # Yield the message token by token to maintain streaming behavior
                 for token in welcome_message.split():
