@@ -35,7 +35,7 @@ class DatabaseIntegrationType(str, enum.Enum):
     SQLITE = "sqlite"
 
 class Company(Base):
-    __tablename__ = 'companies'
+    __tablename__ = 'Company'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -88,10 +88,10 @@ class Company(Base):
 
 
 class DatabaseIntegration(Base):
-    __tablename__ = 'database_integrations'
+    __tablename__ = 'DatabaseIntegration'
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    company_id = Column(String, ForeignKey('companies.id'))
+    company_id = Column(String, ForeignKey('Company.id'))
     name = Column(String(255), nullable=False)
     type = Column(Enum(DatabaseIntegrationType), nullable=False)
     
@@ -116,11 +116,11 @@ class DatabaseIntegration(Base):
     company = relationship("Company", back_populates="database_integrations")
 
 class Document(Base):
-    __tablename__ = 'documents'
+    __tablename__ = 'Document'
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    company_id = Column(String, ForeignKey('companies.id'))
-    agent_id = Column(String, ForeignKey('agents.id'))
+    company_id = Column(String, ForeignKey('Company.id'))
+    agent_id = Column(String, ForeignKey('Agent.id'))
     
     name = Column(String(255), nullable=False)
     type = Column(Enum(DocumentType), nullable=False)
@@ -160,13 +160,13 @@ class Document(Base):
     agent = relationship("Agent", back_populates="documents")
 
 class Agent(Base):
-    __tablename__ = 'agents'
+    __tablename__ = 'Agent'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     type = Column(Enum(AgentType), nullable=False)
-    company_id = Column(String, ForeignKey('companies.id'))
+    company_id = Column(String, ForeignKey('Company.id'))
     
     # Core Configuration
     prompt = Column(Text, nullable=False)
@@ -221,12 +221,12 @@ class Agent(Base):
 
 # Add new ImageProcessingJob model for background processing
 class ImageProcessingJob(Base):
-    __tablename__ = 'image_processing_jobs'
+    __tablename__ = 'ImageProcessingJob'
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String, ForeignKey('documents.id'))
-    company_id = Column(String, ForeignKey('companies.id'))
-    agent_id = Column(String, ForeignKey('agents.id'))
+    document_id = Column(String, ForeignKey('Document.id'))
+    company_id = Column(String, ForeignKey('Company.id'))
+    agent_id = Column(String, ForeignKey('Agent.id'))
     
     status = Column(String(50), default='pending')  # pending, processing, completed, failed
     error_message = Column(Text, nullable=True)
@@ -245,13 +245,13 @@ class ImageProcessingJob(Base):
 
 
 class Conversation(Base):
-    __tablename__ = 'conversations'
+    __tablename__ = 'Conversation'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     customer_id = Column(String(255), nullable=False)
-    company_id = Column(String, ForeignKey('companies.id'))
-    current_agent_id = Column(String, ForeignKey('agents.id'))
+    company_id = Column(String, ForeignKey('Company.id'))
+    current_agent_id = Column(String, ForeignKey('Agent.id'))
     
     # Conversation Data
     history = Column(JSONB, default=list, nullable=False)
@@ -277,12 +277,12 @@ class Conversation(Base):
     interactions = relationship("AgentInteraction", back_populates="conversation", cascade="all, delete-orphan")
 
 class AgentInteraction(Base):
-    __tablename__ = 'agent_interactions'
+    __tablename__ = 'AgentInteraction'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    agent_id = Column(String, ForeignKey('agents.id'))
-    conversation_id = Column(String, ForeignKey('conversations.id'))
+    agent_id = Column(String, ForeignKey('Agent.id'))
+    conversation_id = Column(String, ForeignKey('Conversation.id'))
     
     # Interaction Details
     query = Column(Text, nullable=False)
@@ -295,7 +295,7 @@ class AgentInteraction(Base):
     was_successful = Column(Boolean, nullable=True)
     
     # Context
-    previous_agent_id = Column(String, ForeignKey('agents.id'), nullable=True)
+    previous_agent_id = Column(String, ForeignKey('Agent.id'), nullable=True)
     context_window = Column(JSONB, nullable=True)
     
     # Timestamps
@@ -313,12 +313,12 @@ class AgentInteraction(Base):
     
     
 class Call(Base):
-    __tablename__ = 'calls'
+    __tablename__ = 'Call'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    company_id = Column(String, ForeignKey('companies.id'))
-    conversation_id = Column(String, ForeignKey('conversations.id'), nullable=True)
+    company_id = Column(String, ForeignKey('Company.id'))
+    conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
     
     # Call Details
     call_sid = Column(String(255), unique=True)
