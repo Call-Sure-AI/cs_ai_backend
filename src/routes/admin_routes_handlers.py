@@ -231,6 +231,7 @@ async def create_agent_with_documents(
     prompt: str = Form(...),
     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
     descriptions: Optional[str] = Form(None),
+    user_id: str = Form(...), # User ID for the agent
     db: Session = Depends(get_db)
 ):
     """
@@ -245,7 +246,7 @@ async def create_agent_with_documents(
             name=name,
             type=type.lower(),
             company_id=company_id,
-            user_id=company_id,
+            user_id=user_id,
             prompt=prompt,
             active=True
         )
