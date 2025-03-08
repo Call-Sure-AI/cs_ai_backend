@@ -58,6 +58,6 @@ async def startup_event():
     # Initialize connection manager
     db_session = next(get_db())
     app.state.connection_manager = ConnectionManager(db_session)
-    
+    app.state.is_initialized = True
     # Log successful initialization
     print("Connection manager initialized and stored in app state")

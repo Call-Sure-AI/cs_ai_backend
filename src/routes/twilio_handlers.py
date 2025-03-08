@@ -195,3 +195,62 @@ async def shutdown_event():
     if manager:
         active_connections = len(manager.active_connections)
         logger.warning(f"Shutting down with {active_connections} active connections")
+        
+        
+        
+@router.websocket("/echo-stream")
+async def echo_stream(websocket: WebSocket):
+    """Simple echo handler for testing Twilio Media Stream"""
+    try:
+        await websocket.accept()
+        logger.info("Echo WebSocket connection accepted")
+        
+        # Send a confirmation message
+        await websocket.send_text(json.dumps({"type": "echo_ready"}))
+        
+        # Simple echo loop
+        while True:
+            try:
+                data = await websocket.receive()
+                logger.info(f"Echo received: {data.get('type', 'unknown')}")
+                
+                # Echo back the same data type
+                if data.get('type') == 'websocket.receive':
+                    if 'bytes' in data:
+                        await websocket.send_bytes(data['bytes'])
+                    elif 'text' in data:
+                        await websocket.send_text(data['text'])
+                
+            except Exception as e:
+                logger.error(f"Error in echo loop: {str(e)}")
+                break
+                
+    except Exception as e:
+        logger.error(f"Error in echo handler: {str(e)}")
+    finally:
+        logger.info("Echo WebSocket closed")
+        
+        
+@router.post("/test-incoming-call")
+async def test_incoming_call(request: Request):
+    """Test endpoint for Twilio calls with simplified stream"""
+    try:
+        resp = VoiceResponse()
+        start = Start()
+        
+        # Use the echo endpoint instead
+        stream_url = f'wss://{request.base_url.hostname}/api/v1/twilio/echo-stream'
+        logger.info(f"Setting up test stream URL: {stream_url}")
+        
+        start.stream(url=stream_url)
+        resp.append(start)
+        
+        resp.say('This is a test call with echo functionality.')
+        
+        return resp.to_xml()
+        
+    except Exception as e:
+        logger.error(f"Error in test call: {str(e)}")
+        resp = VoiceResponse()
+        resp.say('An error occurred during the test.')
+        return resp.to_xml()
