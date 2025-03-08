@@ -194,47 +194,106 @@ async def handle_gather(
         form_data = await request.form()
         logger.info(f"Gather form data: {dict(form_data)}")
         
-        # If we have a result, process it
-        if SpeechResult:
-            # Create a response
-            resp = VoiceResponse()
-            
-            # Get the associated client ID
-            client_id = None
-            for call_sid, data in active_calls.items():
-                if call_sid == CallSid:
-                    client_id = data.get("peer_id")
+        # Create a response
+        resp = VoiceResponse()
+        
+        # If we have a speech result, process it with AI
+        if SpeechResult and SpeechResult.strip():
+            # Find the call in active_calls to get peer_id
+            peer_id = None
+            for cid, data in active_calls.items():
+                if cid == CallSid:
+                    peer_id = data.get("peer_id")
                     break
+            
+            if not peer_id and CallSid in active_calls:
+                # If we have the call but no peer_id, create one
+                peer_id = f"twilio_{str(uuid.uuid4())}"
+                active_calls[CallSid]["peer_id"] = peer_id
+                
+            # If we found or created a peer_id, process the speech
+            if peer_id:
+                # Process the speech with AI and get a response
+                try:
+                    # Create RAG service instance
+                    agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
+                    company_id = "cd34fe22-5a40-43ef-b979-7f13cb9e4caa"
                     
-            if client_id:
-                # Create a new Stream to continue listening
-                stream_url = data.get("stream_url")
-                if stream_url:
-                    start = Start()
-                    start.stream(url=stream_url, track="both")
-                    resp.append(start)
+                    # Initialize RAG service
+                    from services.rag.rag_service import RAGService
+                    from services.vector_store.qdrant_service import QdrantService
+                    
+                    vector_store = QdrantService()
+                    rag_service = RAGService(vector_store)
+                    
+                    # Create QA chain
+                    chain = await rag_service.create_qa_chain(
+                        company_id=company_id,
+                        agent_id=agent_id
+                    )
+                    
+                    # Process the question and get response
+                    response_text = ""
+                    async for token in rag_service.get_answer_with_chain(
+                        chain=chain,
+                        question=SpeechResult,
+                        company_name="Callsure AI"
+                    ):
+                        response_text += token
+                    
+                    # Make sure we have a response
+                    if not response_text or response_text.strip() == "":
+                        response_text = "I processed your input but don't have a specific response. How else can I help you?"
+                        
+                    logger.info(f"Generated AI response: {response_text[:100]}...")
+                    
+                    # Set up new TwiML response
+                    # Add the AI response to the TwiML
+                    resp.say(response_text, voice='alice')
+                    
+                except Exception as e:
+                    logger.error(f"Error processing AI response: {str(e)}")
+                    resp.say("I encountered an issue processing your request. How else can I help you?", voice='alice')
+                
+                # Set up a new Stream for the next round
+                company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
+                host = request.headers.get("host") or request.base_url.hostname
+                stream_url = f'wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}'
                 
                 # Add a new Gather to continue listening
-                gather = resp.gather(input='speech', timeout=15, action='/api/v1/twilio/gather')
+                resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
                 
-                return Response(
-                    content=resp.to_xml(),
-                    media_type="application/xml"
-                )
-            
-        # Default response if no processing happened
-        resp = VoiceResponse()
-        gather = resp.gather(input='speech', timeout=15, action='/api/v1/twilio/gather')
+                # Store updated info in active_calls
+                if CallSid in active_calls:
+                    active_calls[CallSid].update({
+                        "last_activity": time.time(),
+                        "peer_id": peer_id,
+                        "stream_url": stream_url
+                    })
+            else:
+                # Fallback if we couldn't find the call
+                resp.say("I received your message. How can I help you further?", voice='alice')
+                resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
+        else:
+            # If no speech detected
+            resp.say("I didn't catch that. Could you please speak again?", voice='alice')
+            resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
+        
+        # Log the generated TwiML
+        twiml_response = resp.to_xml()
+        logger.info(f"Generated gather TwiML: {twiml_response}")
         
         return Response(
-            content=resp.to_xml(),
+            content=twiml_response,
             media_type="application/xml"
         )
         
     except Exception as e:
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
+        
         resp = VoiceResponse()
-        resp.say("I'm sorry, we encountered an error processing your request.")
+        resp.say("I'm sorry, we encountered a technical issue. Please try again later.", voice='alice')
+        
         return Response(
             content=resp.to_xml(),
             media_type="application/xml"
