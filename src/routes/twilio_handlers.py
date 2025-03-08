@@ -233,31 +233,33 @@ async def handle_gather(
                     
                 logger.info(f"Generated AI response: {response_text[:100]}...")
                 
-                # Add the AI response to the TwiML
-                resp.say(response_text, voice='alice')
+                # Add the AI response to the TwiML - TRY DIFFERENT VOICE OPTIONS
+                # Option 1: Default voice
+                resp.say(response_text)
+                
+                # Add a pause to let the speech finish
+                resp.pause(length=1)
                 
             except Exception as e:
                 logger.error(f"Error processing AI response: {str(e)}")
-                resp.say("I encountered an issue processing your request. How else can I help you?", voice='alice')
+                resp.say("I encountered an issue processing your request. How else can I help you?")
+                resp.pause(length=1)
             
         else:
             # If no speech detected
-            resp.say("I didn't catch that. Could you please speak again?", voice='alice')
+            resp.say("I didn't catch that. Could you please speak again?")
+            resp.pause(length=1)
         
         # Add a new Gather to continue listening
-        resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
-        
-        # Store the call in active_calls for future reference
-        if CallSid not in active_calls:
-            peer_id = f"twilio_{str(uuid.uuid4())}"
-            active_calls[CallSid] = {
-                "peer_id": peer_id,
-                "last_activity": time.time()
-            }
+        gather = resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
         
         # Log the generated TwiML
         twiml_response = resp.to_xml()
         logger.info(f"Generated gather TwiML: {twiml_response}")
+        
+        # For debugging, also log specific details about the TwiML
+        logger.info(f"Response type: {type(resp)}")
+        logger.info(f"Response contains Say verb: {'<Say>' in twiml_response}")
         
         return Response(
             content=twiml_response,
@@ -268,7 +270,7 @@ async def handle_gather(
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
         
         resp = VoiceResponse()
-        resp.say("I'm sorry, we encountered a technical issue. Please try again later.", voice='alice')
+        resp.say("I'm sorry, we encountered a technical issue. Please try again later.")
         
         return Response(
             content=resp.to_xml(),
