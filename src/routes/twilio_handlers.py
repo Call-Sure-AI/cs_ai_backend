@@ -262,20 +262,107 @@ async def handle_incoming_call(request: Request):
         resp.say('An error occurred. Please try again later.')
         return resp.to_xml()
 
-# Modified test endpoint with debugging capability
+# Enhanced echo-stream WebSocket handler that properly accepts Twilio Media Streams
+@router.websocket("/echo-stream")
+async def echo_stream(websocket: WebSocket):
+    """Enhanced echo handler for testing Twilio Media Streams"""
+    connection_id = str(uuid.uuid4())[:8]
+    message_count = 0
+    audio_chunks = 0
+    
+    try:
+        # Log incoming connection information
+        logger.info(f"[{connection_id}] Echo stream connection attempt from {websocket.client.host}")
+        
+        # Accept the WebSocket connection
+        await websocket.accept()
+        logger.info(f"[{connection_id}] Echo WebSocket connection accepted")
+        
+        # Main message processing loop
+        while True:
+            try:
+                # Wait for next message
+                message = await websocket.receive()
+                message_count += 1
+                
+                # Check message type - Twilio sends both text and binary messages
+                if 'bytes' in message:
+                    # Binary data (audio chunks)
+                    audio_chunks += 1
+                    if audio_chunks == 1 or audio_chunks % 50 == 0:
+                        logger.info(f"[{connection_id}] Received audio chunk #{audio_chunks}, size: {len(message['bytes'])} bytes")
+                    
+                    # Simply echo back audio for testing
+                    await websocket.send_bytes(message['bytes'])
+                
+                elif 'text' in message:
+                    # Control messages are text (JSON)
+                    logger.info(f"[{connection_id}] Text message #{message_count}: {message['text'][:200]}...")
+                    
+                    try:
+                        data = json.loads(message['text'])
+                        event = data.get('event')
+                        
+                        # Log important events
+                        if event == 'start':
+                            logger.info(f"[{connection_id}] Stream START event: {json.dumps(data)}")
+                            
+                            # Respond to start event (very important for Twilio)
+                            await websocket.send_text(json.dumps({
+                                "event": "connected",
+                                "protocol": "websocket",
+                                "version": "1.0.0"
+                            }))
+                            logger.info(f"[{connection_id}] Sent connected response")
+                            
+                        elif event == 'media':
+                            # Twilio media events
+                            if message_count <= 5:  # Only log initial media events to avoid flooding
+                                logger.info(f"[{connection_id}] Media event: {json.dumps(data)}")
+                            
+                        elif event == 'stop':
+                            logger.info(f"[{connection_id}] Stream STOP event: {json.dumps(data)}")
+                            # No need to echo back the stop event
+                            
+                        else:
+                            # Log any other events
+                            logger.info(f"[{connection_id}] Unknown event type: {event}, data: {json.dumps(data)}")
+                            
+                            # Echo back other text messages
+                            await websocket.send_text(message['text'])
+                            
+                    except json.JSONDecodeError:
+                        logger.warning(f"[{connection_id}] Non-JSON text received: {message['text'][:50]}...")
+                        # Echo back non-JSON text
+                        await websocket.send_text(message['text'])
+                        
+            except Exception as e:
+                logger.error(f"[{connection_id}] Error in message processing: {str(e)}", exc_info=True)
+                break
+                
+    except Exception as e:
+        logger.error(f"[{connection_id}] WebSocket connection error: {str(e)}", exc_info=True)
+    finally:
+        logger.info(f"[{connection_id}] Connection closed after {message_count} messages ({audio_chunks} audio chunks)")
+
+# Updated test-incoming-call handler
 @router.post("/test-incoming-call")
 async def test_incoming_call(request: Request):
-    """Test endpoint for Twilio calls with debug information"""
+    """Test endpoint for Twilio calls with simple echo stream"""
     try:
+        # Log request details
         form_data = await request.form()
         logger.info(f"Test call request headers: {dict(request.headers)}")
         logger.info(f"Test call form data: {dict(form_data)}")
         
-        # Create peer ID for testing
-        peer_id = f"test_{str(uuid.uuid4())}"
+        # Get CallSid for tracking
+        call_sid = form_data.get('CallSid', 'unknown_call')
+        logger.info(f"Processing test call with SID: {call_sid}")
         
         # Create TwiML response
         resp = VoiceResponse()
+        
+        # Create a <Stream> element - must be first in TwiML
         start = Start()
         
         # Use the echo endpoint for testing
@@ -283,13 +370,16 @@ async def test_incoming_call(request: Request):
         stream_url = f'wss://{host}/api/v1/twilio/echo-stream'
         logger.info(f"Setting up test stream URL: {stream_url}")
         
-        start.stream(url=stream_url)
+        # Configure the Stream
+        start.stream(url=stream_url, track="both")  # Add 'track' parameter
         resp.append(start)
         
-        resp.say('This is a test call with echo functionality. Please speak after the beep.')
-        resp.play('https://demo.twilio.com/docs/classic.mp3')  # Add a tone
+        # Add voice instructions after the stream
+        resp.say('This is a test call. Please speak after the beep.')
+        resp.pause(length=1)
+        resp.play('https://demo.twilio.com/docs/classic.mp3')
         
-        # Log the generated TwiML
+        # Log and return TwiML
         twiml_response = resp.to_xml()
         logger.info(f"Generated test TwiML: {twiml_response}")
         
@@ -300,62 +390,3 @@ async def test_incoming_call(request: Request):
         resp = VoiceResponse()
         resp.say('An error occurred during the test.')
         return resp.to_xml()
-
-# Enhanced echo stream with better logging
-@router.websocket("/echo-stream")
-async def echo_stream(websocket: WebSocket):
-    """Enhanced echo handler for testing Twilio Media Stream"""
-    connection_id = str(uuid.uuid4())[:8]
-    message_count = 0
-    
-    try:
-        logger.info(f"[{connection_id}] Echo stream connection attempt from {websocket.client.host}")
-        await websocket.accept()
-        logger.info(f"[{connection_id}] Echo WebSocket connection accepted")
-        
-        # Send a confirmation message
-        await websocket.send_text(json.dumps({
-            "type": "echo_ready",
-            "message": "Echo server ready to receive audio"
-        }))
-        logger.info(f"[{connection_id}] Sent ready message")
-        
-        # Simple echo loop with enhanced debugging
-        while True:
-            try:
-                message = await websocket.receive()
-                message_count += 1
-                
-                # Log periodically to avoid flooding logs
-                if message_count == 1 or message_count % 100 == 0:
-                    logger.info(f"[{connection_id}] Echo message #{message_count}, type: {message.get('type', 'unknown')}")
-                
-                # Echo back the same data type
-                if message.get('type') == 'websocket.receive':
-                    if 'bytes' in message:
-                        # We received binary data (likely audio)
-                        await websocket.send_bytes(message['bytes'])
-                    elif 'text' in message:
-                        # We received text data (likely control messages)
-                        text_data = message['text']
-                        logger.info(f"[{connection_id}] Received text: {text_data[:100]}...")
-                        await websocket.send_text(text_data)
-                        
-                        # Try to parse JSON for more detailed logging
-                        try:
-                            json_data = json.loads(text_data)
-                            if json_data.get('event') == 'start':
-                                logger.info(f"[{connection_id}] Stream START event received")
-                            elif json_data.get('event') == 'stop':
-                                logger.info(f"[{connection_id}] Stream STOP event received")
-                        except:
-                            pass
-                
-            except Exception as e:
-                logger.error(f"[{connection_id}] Error in echo loop: {str(e)}")
-                break
-                
-    except Exception as e:
-        logger.error(f"[{connection_id}] Error in echo handler: {str(e)}")
-    finally:
-        logger.info(f"[{connection_id}] Echo WebSocket closed after {message_count} messages")
