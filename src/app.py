@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
+import logging
 
 from managers.connection_manager import ConnectionManager
 from database.config import get_db
+from services.vector_store.qdrant_service import QdrantService
+from services.webrtc.manager import WebRTCManager
 
-
+logger = logging.getLogger(__name__)
 
 from config.settings import ALLOWED_ORIGINS, DEBUG, APP_PREFIX
 # from routes.ai_routes_handlers import ai_router
@@ -57,7 +60,17 @@ app.include_router(twilio_router, prefix=f"{APP_PREFIX}/twilio", tags=["Twilio"]
 async def startup_event():
     # Initialize connection manager
     db_session = next(get_db())
-    app.state.connection_manager = ConnectionManager(db_session)
-    app.state.is_initialized = True
-    # Log successful initialization
-    print("Connection manager initialized and stored in app state")
+    
+    # Initialize vector store
+    vector_store = QdrantService()
+    
+    # Initialize connection manager
+    connection_manager = ConnectionManager(db_session, vector_store)
+    app.state.connection_manager = connection_manager
+    
+    # Initialize WebRTC manager
+    webrtc_manager = WebRTCManager()
+    webrtc_manager.connection_manager = connection_manager
+    app.state.webrtc_manager = webrtc_manager
+    
+    logger.info("Application initialized with connection and WebRTC managers")

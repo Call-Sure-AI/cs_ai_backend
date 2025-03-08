@@ -7,6 +7,8 @@ import json
 import uuid
 from managers.connection_manager import ConnectionManager
 from config.settings import settings
+from routes.webrtc_handlers import router as webrtc_router
+from services.webrtc.manager import WebRTCManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -31,14 +33,20 @@ async def handle_incoming_call(request: Request):
         logger.info(f"Request headers: {dict(request.headers)}")
         logger.info(f"Base URL: {request.base_url}")
         
+        # Generate a peer ID for this call
+        peer_id = f"twilio_{str(uuid.uuid4())}"
+        
+        # Use the WebRTC signaling endpoint
+        company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"  # Use your default company key
+        agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"  # Use your default agent
+        
+        # WebRTC endpoint URL
+        stream_url = f'wss://{request.base_url.hostname}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}'
+        logger.info(f"Setting up WebRTC stream URL: {stream_url}")
+        
+        # Create TwiML response
         resp = VoiceResponse()
         start = Start()
-        
-        # Create WebSocket connection for stream
-        # Make sure path is correct!
-        stream_url = f'wss://{request.base_url.hostname}/api/v1/twilio/stream'
-        logger.info(f"Setting up stream URL: {stream_url}")
-        
         start.stream(url=stream_url)
         resp.append(start)
         
@@ -50,12 +58,10 @@ async def handle_incoming_call(request: Request):
     
     except Exception as e:
         logger.error(f"Error handling incoming call: {str(e)}", exc_info=True)
-        logger.debug(f"Request data during error: {await request.body()}")
         
         resp = VoiceResponse()
         resp.say('An error occurred. Please try again later.')
         return resp.to_xml()
-
 
 @router.websocket("/stream")
 async def handle_stream(websocket: WebSocket):
