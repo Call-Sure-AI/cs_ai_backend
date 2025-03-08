@@ -35,7 +35,7 @@ async def handle_incoming_call(request: Request):
         start = Start()
         
         # Create WebSocket connection for stream
-        stream_url = f'wss://{request.base_url.hostname}/api/twilio/stream'
+        stream_url = f'wss://{request.base_url.hostname}/api/v1/twilio/stream'
         logger.info(f"Setting up stream URL: {stream_url}")
         
         start.stream(url=stream_url)
