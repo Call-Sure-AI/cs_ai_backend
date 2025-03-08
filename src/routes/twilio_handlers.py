@@ -1,4 +1,5 @@
 from fastapi import APIRouter, WebSocket, Form, Request
+from fastapi.responses import Response
 from twilio.twiml.voice_response import VoiceResponse, Start
 from twilio.rest import Client
 from typing import Optional, Dict, Any
@@ -84,14 +85,20 @@ async def handle_incoming_call(request: Request):
         logger.info(f"Generated TwiML: {twiml_response}")
         logger.info("TwiML response generated successfully")
         
-        return twiml_response
+        return Response(
+            content=twiml_response,
+            media_type="application/xml"  # This is the critical fix
+        )
     
     except Exception as e:
         logger.error(f"Error handling incoming call: {str(e)}", exc_info=True)
         
         resp = VoiceResponse()
         resp.say('An error occurred. Please try again later.')
-        return resp.to_xml()
+        return Response(
+            content=resp.to_xml(),
+            media_type="application/xml"
+        )
 
 @router.post("/simple-test-call")
 async def simple_test_call(request: Request):
