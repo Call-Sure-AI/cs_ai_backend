@@ -14,7 +14,7 @@ from services.vector_store.qdrant_service import QdrantService
 from managers.connection_manager import ConnectionManager
 from utils.logger import setup_logging
 from config.settings import settings
-from database.models import Company
+from database.models import Company, Agent
 import uuid
 
 # Initialize router and logging
@@ -192,7 +192,7 @@ def initialize_app(app):
 #         except Exception as e:
 #             logger.error(f"Error during cleanup: {str(e)}")
 
-async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
+async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within WebRTC signaling endpoint"""
     connection_id = str(uuid.uuid4())[:8]
     message_count = 0
@@ -219,10 +219,19 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
             return
             
         # Initialize mock company for Twilio calls
+        company = db.query(Company).filter_by(api_key=company_api_key).first()
+        if not company:
+            logger.error(f"[{connection_id}] Company not found for API key: {company_api_key}")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+            
+        # Set company info from the database
         company_info = {
-            "id": "twilio_company",
-            "name": "Twilio Caller"
+            "id": company.id,
+            "name": company.name
         }
+        
         connection_manager.client_companies[client_id] = company_info
         
         # Connect client to manager
@@ -230,12 +239,20 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str):
         logger.info(f"[{connection_id}] Client {client_id} connected to manager")
         
         # Initialize agent resources
-        agent = await connection_manager.agent_manager.get_base_agent(company_info["id"])
-        if not agent:
-            agent = {
-                "id": "twilio_agent",
-                "name": "Twilio Assistant"
-            }
+        agent_record = db.query(Agent).filter_by(id=agent_id).first()
+        if not agent_record:
+            logger.error(f"[{connection_id}] Agent not found with ID: {agent_id}")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+            
+        agent = {
+            "id": agent_record.id,
+            "name": agent_record.name,
+            "type": agent_record.type,
+            "prompt": agent_record.prompt,
+            "confidence_threshold": agent_record.confidence_threshold
+        }
         
         # Initialize agent resources for this client
         success = await connection_manager.initialize_agent_resources(client_id, company_info["id"], agent)
@@ -428,7 +445,7 @@ async def signaling_endpoint(
                 return
             
             # For Twilio, we'll use a different handler that's optimized for Media Streams
-            await handle_twilio_media_stream(websocket, peer_id)
+            await handle_twilio_media_stream(websocket, peer_id, company_api_key, agent_id, db)
             return
             
         # Regular WebRTC clients continue with company validation
