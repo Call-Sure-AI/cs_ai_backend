@@ -194,42 +194,28 @@ def initialize_app(app):
 #             logger.error(f"Error during cleanup: {str(e)}")
 
 
-async def convert_text_to_audio(text: str) -> str:
+async def send_audio_to_webrtc(client_id: str, audio_data: bytes):
     """
-    Convert text to audio data and return as base64 encoded string
-    for Twilio Media Streams
+    Sends generated audio (TTS output) to the WebRTC client.
+
+    Args:
+        client_id: The ID of the WebRTC client.
+        audio_data: The raw audio bytes to be sent.
     """
-    # Option 1: Use a cloud TTS service (Google, AWS, etc.)
-    # This is just a placeholder - implement with your preferred TTS service
     try:
-        # Example using Google TTS
-        from google.cloud import texttospeech
+        ws = webrtc_manager.connection_manager.active_connections.get(client_id)
+        if not ws or webrtc_manager.connection_manager.websocket_is_closed(ws):
+            logger.warning(f"Client {client_id} disconnected before receiving audio.")
+            return False
         
-        client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
-        )
-        
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MULAW,
-            sample_rate_hertz=8000  # Twilio expects 8kHz mu-law audio
-        )
-        
-        response = client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        
-        # Convert to base64 for Twilio
-        import base64
-        audio_base64 = base64.b64encode(response.audio_content).decode('utf-8')
-        
-        return audio_base64
+        # Send the audio data as binary via WebRTC
+        await ws.send_bytes(audio_data)
+        logger.info(f"Sent TTS-generated audio to WebRTC client {client_id}")
+        return True
     except Exception as e:
-        logger.error(f"Error converting text to audio: {str(e)}")
-        return ""
+        logger.error(f"Error sending audio to WebRTC client {client_id}: {str(e)}")
+        return False
+
 
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
@@ -361,60 +347,98 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             
             is_processing = False
         
-        async def process_buffered_message(manager, cid, msg_data):
-            """Process a message with buffer to avoid token-by-token transmission"""
-            try:
-                # Get necessary resources
-                ws = manager.active_connections.get(cid)
-                if not ws or manager.websocket_is_closed(ws):
-                    logger.warning(f"Client disconnected before processing")
-                    return
+        # async def process_buffered_message(manager, cid, msg_data):
+        #     """Process a message with buffer to avoid token-by-token transmission"""
+        #     try:
+        #         # Get necessary resources
+        #         ws = manager.active_connections.get(cid)
+        #         if not ws or manager.websocket_is_closed(ws):
+        #             logger.warning(f"Client disconnected before processing")
+        #             return
                     
-                agent_res = manager.agent_resources.get(cid)
-                chain = agent_res['chain']
-                rag_service = agent_res['rag_service']
+        #         agent_res = manager.agent_resources.get(cid)
+        #         chain = agent_res['chain']
+        #         rag_service = agent_res['rag_service']
                 
-                # Create a background task to process response in chunks
-                async def process_response():
-                    buffer = ""
-                    response_time = time.time()
+        #         # Create a background task to process response in chunks
+        #         async def process_response():
+        #             buffer = ""
+        #             response_time = time.time()
                     
-                    # Use company name for welcome message
-                    question = msg_data.get('message', '')
-                    is_welcome = question == "__SYSTEM_WELCOME__"
+        #             # Use company name for welcome message
+        #             question = msg_data.get('message', '')
+        #             is_welcome = question == "__SYSTEM_WELCOME__"
                     
-                    # Stream answer from AI with buffering
-                    try:
-                        async for token in rag_service.get_answer_with_chain(
-                            chain=chain,
-                            question=question,
-                            company_name="Callsure AI" if is_welcome else None
-                        ):
-                            buffer += token
+        #             # Stream answer from AI with buffering
+        #             try:
+        #                 async for token in rag_service.get_answer_with_chain(
+        #                     chain=chain,
+        #                     question=question,
+        #                     company_name="Callsure AI" if is_welcome else None
+        #                 ):
+        #                     buffer += token
                             
-                            # Only log tokens, don't try to send via WebRTC
-                            # We'll use TwiML for actual audio response
-                            logger.info(f"AI response token: {token}")
+        #                     # Only log tokens, don't try to send via WebRTC
+        #                     # We'll use TwiML for actual audio response
+        #                     logger.info(f"AI response token: {token}")
                         
-                        # Log the full response
-                        logger.info(f"Complete AI response: {buffer}")
+        #                 # Log the full response
+        #                 logger.info(f"Complete AI response: {buffer}")
                         
-                        # Here's the key - we don't need to try sending audio via WebRTC
-                        # The TwiML <Say> element will handle it when we get to the gather endpoint
+        #                 # Here's the key - we don't need to try sending audio via WebRTC
+        #                 # The TwiML <Say> element will handle it when we get to the gather endpoint
                         
-                        logger.info(f"Complete response processed in {time.time() - response_time:.2f}s")
-                    except Exception as e:
-                        logger.error(f"Error processing response: {str(e)}")
+        #                 logger.info(f"Complete response processed in {time.time() - response_time:.2f}s")
+        #             except Exception as e:
+        #                 logger.error(f"Error processing response: {str(e)}")
                 
-                # Start processing in the background
-                asyncio.create_task(process_response())
+        #         # Start processing in the background
+        #         asyncio.create_task(process_response())
                 
-                # Return quickly to allow the call to continue
-                return True
+        #         # Return quickly to allow the call to continue
+        #         return True
+        #     except Exception as e:
+        #         logger.error(f"Error in buffered message processing: {str(e)}")
+        #         return False
+        
+        async def process_buffered_message(manager, client_id, msg_data):
+            """
+            Process a message with buffering to avoid token-by-token responses.
+            Converts AI-generated text into speech and sends via WebRTC.
+
+            Args:
+                manager: The connection manager instance.
+                client_id: The ID of the WebRTC client.
+                msg_data: The message data to process.
+            """
+            try:
+                ws = manager.active_connections.get(client_id)
+                if not ws or manager.websocket_is_closed(ws):
+                    logger.warning(f"Client {client_id} disconnected before processing response.")
+                    return
+
+                agent_res = manager.agent_resources.get(client_id)
+                chain = agent_res["chain"]
+                rag_service = agent_res["rag_service"]
+
+                buffer = ""
+                async for token in rag_service.get_answer_with_chain(
+                    chain=chain, question=msg_data.get("message", ""), company_name="Callsure AI"
+                ):
+                    buffer += token
+
+                logger.info(f"Complete AI response: {buffer}")
+
+                # Convert AI response to audio using TTS
+                tts_audio = await tts_service.generate_audio(buffer)
+
+                # Send audio to WebRTC
+                if tts_audio:
+                    await send_audio_to_webrtc(client_id, tts_audio)
+
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
-                return False
-        
+
         
         # Main message processing loop
         while not websocket_closed:
