@@ -194,7 +194,7 @@ def initialize_app(app):
 #             logger.error(f"Error during cleanup: {str(e)}")
 
 
-async def convert_text_to_audio(self, text: str) -> str:
+async def convert_text_to_audio(text: str) -> str:
     """
     Convert text to audio data and return as base64 encoded string
     for Twilio Media Streams
