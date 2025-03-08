@@ -157,7 +157,7 @@ async def handle_incoming_call(request: Request):
         
         # Add initial greeting after stream is established
         resp.say('Hello, I am your AI assistant. How can I help you today?', voice='alice')
-        
+        resp.gather(input='speech', timeout=10)
         # Log the generated TwiML
         twiml_response = resp.to_xml()
         logger.info(f"Generated TwiML: {twiml_response}")

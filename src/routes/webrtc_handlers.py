@@ -408,7 +408,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 last_activity_time = time.time() 
                 
                 if message.get('type') == 'websocket.disconnect':
-                    logger.info(f"[{connection_id}] Received disconnect message")
+                    disconnect_code = message.get('code', 'unknown')
+                    disconnect_reason = message.get('reason', 'unknown')
+                    logger.info(f"[{connection_id}] Received disconnect message: code={disconnect_code}, reason={disconnect_reason}")
                     websocket_closed = True
                     break
                 
