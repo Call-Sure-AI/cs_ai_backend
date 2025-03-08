@@ -28,15 +28,15 @@ async def handle_incoming_call(request: Request):
     
     try:
         # Log request details
-        logger.debug(f"Request headers: {dict(request.headers)}")
-        logger.debug(f"Base URL: {request.base_url}")
+        logger.info(f"Request headers: {dict(request.headers)}")
+        logger.info(f"Base URL: {request.base_url}")
         
         resp = VoiceResponse()
         start = Start()
         
         # Create WebSocket connection for stream
         stream_url = f'wss://{request.base_url.hostname}/api/twilio/stream'
-        logger.debug(f"Setting up stream URL: {stream_url}")
+        logger.info(f"Setting up stream URL: {stream_url}")
         
         start.stream(url=stream_url)
         resp.append(start)
