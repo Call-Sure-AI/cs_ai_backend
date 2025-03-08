@@ -194,31 +194,27 @@ async def handle_gather(
         form_data = await request.form()
         logger.info(f"Gather form data: {dict(form_data)}")
         
-        # Create a response
+        # Create the TwiML response
         resp = VoiceResponse()
         
         # If we have a speech result, process it with AI
         if SpeechResult and SpeechResult.strip():
-            # Process the speech with AI and get a response
             try:
-                # Create RAG service instance
+                # Process the speech with AI
                 agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
                 company_id = "cd34fe22-5a40-43ef-b979-7f13cb9e4caa"
                 
-                # Initialize RAG service
                 from services.rag.rag_service import RAGService
                 from services.vector_store.qdrant_service import QdrantService
                 
                 vector_store = QdrantService()
                 rag_service = RAGService(vector_store)
                 
-                # Create QA chain
                 chain = await rag_service.create_qa_chain(
                     company_id=company_id,
                     agent_id=agent_id
                 )
                 
-                # Process the question and get response
                 response_text = ""
                 async for token in rag_service.get_answer_with_chain(
                     chain=chain,
@@ -227,58 +223,59 @@ async def handle_gather(
                 ):
                     response_text += token
                 
-                # Make sure we have a response
                 if not response_text or response_text.strip() == "":
                     response_text = "I processed your input but don't have a specific response. How else can I help you?"
-                    
+                
                 logger.info(f"Generated AI response: {response_text[:100]}...")
                 
-                # Add the AI response to the TwiML - TRY DIFFERENT VOICE OPTIONS
-                # Option 1: Default voice
-                resp.say(response_text, voice='Polly.Matthew')
+                # CRITICAL: The key change is here - we'll NOT nest the Gather inside the VoiceResponse
+                # First, just add the Say element
+                resp.say(response_text, voice='Polly.Matthew', language='en-US')
                 
-                # Add a pause to let the speech finish
+                # Add a pause
                 resp.pause(length=1)
                 
             except Exception as e:
                 logger.error(f"Error processing AI response: {str(e)}")
-                resp.say("I encountered an issue processing your request. How else can I help you?")
+                resp.say("I encountered an issue processing your request. How else can I help you?", voice='Polly.Matthew', language='en-US')
                 resp.pause(length=1)
-            
         else:
-            # If no speech detected
-            resp.say("I didn't catch that. Could you please speak again?")
+            # No speech detected
+            resp.say("I didn't catch that. Could you please speak again?", voice='Polly.Matthew', language='en-US')
             resp.pause(length=1)
         
-        # Add a new Gather to continue listening
-        gather = resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
+        # IMPORTANT: Add the Gather element AFTER the Say and Pause, not nested
+        gather = resp.gather(
+            input='speech dtmf',
+            timeout=30,  # Increase timeout for better user experience
+            action='/api/v1/twilio/gather'
+        )
         
         # Log the generated TwiML
         twiml_response = resp.to_xml()
         logger.info(f"Generated gather TwiML: {twiml_response}")
-
-        # For debugging, also log specific details about the TwiML
+        
+        # Debug log
         logger.info(f"Response type: {type(resp)}")
-        logger.info(f"Response contains Say verb: {len(resp.verbs) > 0 and resp.verbs[0].name == 'Say'}")
+        logger.info(f"Response contains Say verb: {len(resp.verbs) > 0}")
         
-        
+        # Return the TwiML
         return Response(
             content=twiml_response,
             media_type="application/xml"
         )
-        
+    
     except Exception as e:
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
         
         resp = VoiceResponse()
-        resp.say("I'm sorry, we encountered a technical issue. Please try again later.")
+        resp.say("I'm sorry, we encountered a technical issue. Please try again later.", voice='Polly.Matthew', language='en-US')
         
         return Response(
             content=resp.to_xml(),
             media_type="application/xml"
         )
-
-
+        
 
 @router.post("/test-incoming-call")
 async def test_incoming_call(request: Request):
