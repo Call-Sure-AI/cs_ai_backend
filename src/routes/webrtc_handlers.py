@@ -8,6 +8,7 @@ from datetime import datetime
 import asyncio
 import time
 
+from services.speech.stt_service import SpeechToTextService
 from database.config import get_db
 from services.webrtc.manager import WebRTCManager
 from services.vector_store.qdrant_service import QdrantService
