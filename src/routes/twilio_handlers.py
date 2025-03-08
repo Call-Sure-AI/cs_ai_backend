@@ -10,6 +10,8 @@ from managers.connection_manager import ConnectionManager
 from config.settings import settings
 from routes.webrtc_handlers import router as webrtc_router
 from services.webrtc.manager import WebRTCManager
+from services.speech.stt_service import SpeechToTextService
+from services.speech.tts_service import TextToSpeechService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,6 +25,10 @@ except Exception as e:
     raise
 
 manager: Optional[ConnectionManager] = None
+
+stt_service = SpeechToTextService()
+tts_service = TextToSpeechService()
+
 
 # In-memory storage to track active calls (in production, use Redis or a database)
 active_calls: Dict[str, Dict[str, Any]] = {}
@@ -53,20 +59,20 @@ async def handle_incoming_call(request: Request):
             "peer_id": peer_id,
             "caller": caller,
             "start_time": form_data.get('Timestamp'),
-            "status": "initiated"
+            "status": "initiated",
+            "last_activity": time.time()
         }
         
-        # Default company key and agent
-        company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
-        agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
+        # Register call with TTS service
+        await tts_service.register_call(call_sid, peer_id)
         
         # Get host from headers or base URL
         host = request.headers.get("host") or request.base_url.hostname
         
-        # For debugging, use the media-stream endpoint which has proper logging
-        # Once confirmed working, switch back to webrtc endpoint
-        # stream_url = f'wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}'
-        stream_url = f'wss://{host}/api/v1/twilio/basic-test'
+        # For proper WebRTC integration, use the WebRTC signaling endpoint
+        company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
+        agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
+        stream_url = f'wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}'
         logger.info(f"Setting up stream URL: {stream_url}")
         
         # Create TwiML response with stream
@@ -74,11 +80,12 @@ async def handle_incoming_call(request: Request):
         
         # IMPORTANT: Stream must be the first element in the TwiML response
         start = Start()
-        start.stream(url=stream_url, track="both")
+        # track="both" captures both inbound and outbound audio
+        start.stream(url=stream_url, track="both") 
         resp.append(start)
         
         # Add initial greeting after stream is established
-        resp.say('Hello, I am your AI assistant. How can I help you today?')
+        resp.say('Hello, I am your AI assistant. How can I help you today?', voice='alice')
         
         # Log the generated TwiML
         twiml_response = resp.to_xml()
@@ -87,18 +94,20 @@ async def handle_incoming_call(request: Request):
         
         return Response(
             content=twiml_response,
-            media_type="application/xml"  # This is the critical fix
+            media_type="application/xml"
         )
     
     except Exception as e:
         logger.error(f"Error handling incoming call: {str(e)}", exc_info=True)
         
         resp = VoiceResponse()
-        resp.say('An error occurred. Please try again later.')
+        resp.say('An error occurred. Please try again later.', voice='alice')
         return Response(
             content=resp.to_xml(),
             media_type="application/xml"
         )
+
+
 
 @router.post("/simple-test-call")
 async def simple_test_call(request: Request):

@@ -357,64 +357,106 @@ class ConnectionManager:
             raise
 
     
-    
-    # async def process_streaming_message(self, client_id: str, message_data: dict):
-    #     """Process incoming WebSocket messages and stream responses."""
-    #     start_time = time.time()
+    async def process_streaming_message_with_speech(self, client_id: str, message_data: dict):
+        """Process incoming message with speech-to-text/text-to-speech support for Twilio"""
+        start_time = time.time()
+        msg_id = str(time.time())  # Generate a unique message ID for this response
+        chunk_number = 0
+        accumulated_text = ""
         
-    #     try:
-    #         websocket = self.active_connections.get(client_id)
-    #         if not websocket or websocket.client_state.name == "DISCONNECTED":
-    #             logger.warning(f"Dropping message for disconnected client {client_id}")
-    #             return
+        try:
+            websocket = self.active_connections.get(client_id)
+            if not websocket or self.websocket_is_closed(websocket):
+                logger.warning(f"Dropping message for disconnected client {client_id}")
+                return
 
-    #         agent_resources = self.agent_resources.get(client_id)
-    #         logger.info(f"Agent resources for {client_id} are {agent_resources}")
+            agent_resources = self.agent_resources.get(client_id)
+            logger.info(f"Agent resources for {client_id} are {agent_resources}")
 
-    #         if not agent_resources:
-    #             raise ValueError("Agent resources not initialized")
+            if not agent_resources:
+                raise ValueError("Agent resources not initialized")
 
-    #         company_info = self.client_companies.get(client_id)
-    #         logger.info(f"Company info for {client_id} is {company_info}")
+            company_info = self.client_companies.get(client_id)
+            logger.info(f"Company info for {client_id} is {company_info}")
 
-    #         if not company_info or not websocket:
-    #             raise ValueError("Invalid connection state")
+            if not company_info or not websocket:
+                raise ValueError("Invalid connection state")
 
-    #         # Fetch conversation context
-    #         conversation = self.client_conversations.get(client_id)
-    #         if not conversation:
-    #             conversation = await self.agent_manager.create_conversation(company_info['id'], client_id)
-    #             logger.info(f"Created conversation {conversation}") 
-    #         if not conversation:
-    #             raise ValueError("Failed to create conversation")
+            # Fetch conversation context
+            conversation = self.client_conversations.get(client_id)
+            if not conversation:
+                conversation = await self.agent_manager.create_conversation(company_info['id'], client_id)
+                logger.info(f"Created conversation {conversation}") 
+            if not conversation:
+                raise ValueError("Failed to create conversation")
             
-    #         self.client_conversations[client_id] = conversation
+            self.client_conversations[client_id] = conversation
             
-    #         context = await self.agent_manager.get_conversation_context(conversation['id'])
+            context = await self.agent_manager.get_conversation_context(conversation['id'])
 
-    #         # Get RAG Service
-    #         chain = agent_resources['chain']
-    #         rag_service = agent_resources['rag_service']
+            # Get RAG Service
+            chain = agent_resources['chain']
+            rag_service = agent_resources['rag_service']
 
-    #         # ✅ Stream Response Token-by-Token
-    #         async for token in rag_service.get_answer_with_chain(
-    #             chain=chain,
-    #             question=message_data.get('message', ''),
-    #             conversation_context=context
-    #         ):
-    #             await websocket.send_json({"type": "text", "content": token})
+            # Check if this is a Twilio client
+            is_twilio_client = client_id.startswith('twilio_')
 
-    #         # ✅ Mark response completion
-    #         await websocket.send_json({"type": "text", "content": "[END]"})
+            # Stream Response Token-by-Token
+            async for token in rag_service.get_answer_with_chain(
+                chain=chain,
+                question=message_data.get('message', ''),
+                conversation_context=context
+            ):
+                chunk_number += 1
+                
+                # For regular WebSocket clients, send streaming chunks
+                await self.send_json(websocket, {
+                    "type": "stream_chunk",
+                    "text_content": token,
+                    "audio_content": None,  # No audio yet
+                    "chunk_number": chunk_number,
+                    "msg_id": msg_id
+                })
+                
+                # Accumulate text for speech synthesis (for Twilio)
+                accumulated_text += token
+                
+                # Check if we have a complete sentence to send as speech for Twilio
+                if is_twilio_client and any(char in accumulated_text for char in ['.', '!', '?', '\n']):
+                    # This will be handled by the Twilio module
+                    await self.handle_twilio_speech(client_id, accumulated_text)
+                    accumulated_text = ""  # Reset after sending
+                
+                logger.info(f"Chunk {chunk_number} sent to client {client_id} and msg_id {msg_id}, content: {token}")
+
+            # Send any remaining text
+            if is_twilio_client and accumulated_text.strip():
+                await self.handle_twilio_speech(client_id, accumulated_text)
+
+            # Send end of stream message
+            await self.send_json(websocket, {
+                "type": "stream_end",
+                "msg_id": msg_id
+            })
             
-    #         logger.info(f"Final response sent to client {client_id}")
+            logger.info(f"Final response sent to client {client_id}")
 
-    #     except Exception as e:
-    #         logger.error(f"Error processing message: {str(e)}", exc_info=True)
-    #         await self.handle_error(client_id, str(e))
-    #     finally:
-    #         logger.info(f"Processing time: {time.time() - start_time:.3f}s")
+        except Exception as e:
+            logger.error(f"Error processing message: {str(e)}", exc_info=True)
+            await self.handle_error(client_id, str(e))
+        finally:
+            logger.info(f"Processing time: {time.time() - start_time:.3f}s")
 
+    async def handle_twilio_speech(self, client_id: str, text: str):
+        """Handle speech synthesis for Twilio clients"""
+        try:
+            # This method will be called by the connection manager
+            # Reference to the handle_ai_response in the Twilio module
+            from routes.twilio_handlers import handle_ai_response
+            await handle_ai_response(client_id, text)
+        except Exception as e:
+            logger.error(f"Error in handle_twilio_speech: {str(e)}")
+    
     
     async def process_streaming_message(self, client_id: str, message_data: dict):
         """Process incoming WebSocket messages and stream responses with msg_id tracking."""
