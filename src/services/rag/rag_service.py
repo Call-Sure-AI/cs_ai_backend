@@ -95,16 +95,67 @@ class RAGService:
             logger.error(f"Error creating QA chain: {str(e)}")
             raise
     
+    # async def get_answer_with_chain(
+    #     self,
+    #     chain: RetrievalQA,
+    #     question: str,
+    #     conversation_context: Optional[List[Dict]] = None
+    # ) -> AsyncIterator[str]:
+    #     """Stream responses token-by-token from the RAG chain"""
+    #     try:
+    #         logger.info(f"Querying chain with question: {question}")
+            
+    #         # Add conversation context if available
+    #         query_with_context = question
+    #         if conversation_context:
+    #             recent_messages = "\n".join([
+    #                 f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}"
+    #                 for msg in conversation_context[-3:]  # Use last 3 messages
+    #             ])
+                
+    #             query_with_context = f"{recent_messages}\n\nCurrent question: {question}"
+    #             logger.info(f"Added conversation context: {recent_messages[:100]}...")
+            
+    #         # Stream response using astream_events
+    #         async for event in chain.astream_events(
+    #             {"query": query_with_context, "question": question},
+    #             config=RunnableConfig(run_name="streaming_chain"),
+    #             version="v2"
+    #         ):
+    #             if event["event"] == "on_chat_model_stream":
+    #                 chunk = event["data"].get("chunk", "")
+    #                 if isinstance(chunk, AIMessageChunk):
+    #                     token = chunk.content
+    #                 else:
+    #                     token = str(chunk)
+                    
+    #                 yield token
+                
+    #     except Exception as e:
+    #         logger.error(f"Error getting answer with chain: {str(e)}")
+    #         yield "I encountered an error processing your question."
+    
     async def get_answer_with_chain(
         self,
         chain: RetrievalQA,
         question: str,
-        conversation_context: Optional[List[Dict]] = None
+        conversation_context: Optional[List[Dict]] = None,
+        company_name: str = "our service"  # Add default company name
     ) -> AsyncIterator[str]:
         """Stream responses token-by-token from the RAG chain"""
         try:
             logger.info(f"Querying chain with question: {question}")
             
+            # Handle special system commands
+            if question == "__SYSTEM_WELCOME__":
+                # Yield a friendly welcome message instead of querying the knowledge base
+                welcome_message = f"Hello! Welcome to {company_name}. I'm your AI voice assistant. How may I help you today?"
+                
+                # Yield the message token by token to maintain streaming behavior
+                for token in welcome_message.split():
+                    yield token + " "
+                return
+                
             # Add conversation context if available
             query_with_context = question
             if conversation_context:
@@ -134,6 +185,7 @@ class RAGService:
         except Exception as e:
             logger.error(f"Error getting answer with chain: {str(e)}")
             yield "I encountered an error processing your question."
+    
     
     async def get_answer(
         self,

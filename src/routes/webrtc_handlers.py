@@ -343,19 +343,26 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 conv = await manager._get_or_create_conversation(company_info['id'], cid)
                 context = await manager.agent_manager.get_conversation_context(conv['id'])
                 
+                # Get company name for welcome message
+                company_name = company_info.get('name', 'our service')
+                
                 # Create a background task to process response in chunks
-                # This allows us to return faster and let the call continue while responding
                 async def process_response():
                     buffer = ""
                     response_time = time.time()
                     msg_id = str(response_time)
                     
+                    # Use company name for welcome message
+                    question = msg_data.get('message', '')
+                    is_welcome = question == "__SYSTEM_WELCOME__"
+                    
                     # Stream answer from AI with buffering to prevent token-by-token responses
                     try:
                         async for token in rag_service.get_answer_with_chain(
                             chain=chain,
-                            question=msg_data.get('message', ''),
-                            conversation_context=context
+                            question=question,
+                            conversation_context=context,
+                            company_name=company_name if is_welcome else None
                         ):
                             buffer += token
                             
@@ -396,8 +403,8 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             except Exception as e:
                 logger.error(f"[{connection_id}] Error in buffered message processing: {str(e)}")
                 return False
-        
-        
+            
+            
         # Main message processing loop
         while not websocket_closed:
             try:
