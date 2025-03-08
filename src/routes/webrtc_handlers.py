@@ -194,7 +194,42 @@ def initialize_app(app):
 #             logger.error(f"Error during cleanup: {str(e)}")
 
 
-
+async def convert_text_to_audio(self, text: str) -> str:
+    """
+    Convert text to audio data and return as base64 encoded string
+    for Twilio Media Streams
+    """
+    # Option 1: Use a cloud TTS service (Google, AWS, etc.)
+    # This is just a placeholder - implement with your preferred TTS service
+    try:
+        # Example using Google TTS
+        from google.cloud import texttospeech
+        
+        client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+        )
+        
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MULAW,
+            sample_rate_hertz=8000  # Twilio expects 8kHz mu-law audio
+        )
+        
+        response = client.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
+        )
+        
+        # Convert to base64 for Twilio
+        import base64
+        audio_base64 = base64.b64encode(response.audio_content).decode('utf-8')
+        
+        return audio_base64
+    except Exception as e:
+        logger.error(f"Error converting text to audio: {str(e)}")
+        return ""
 
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
@@ -353,55 +388,76 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     msg_id = str(response_time)
                     
                     # Use company name for welcome message
-                    question = msg_data.get('message', '')
-                    is_welcome = question == "__SYSTEM_WELCOME__"
+                    # question = msg_data.get('message', '')
+                    # is_welcome = question == "__SYSTEM_WELCOME__"
                     
                     # Stream answer from AI with buffering to prevent token-by-token responses
                     try:
                         async for token in rag_service.get_answer_with_chain(
                             chain=chain,
-                            question=question,
+                            question=msg_data.get('message', ''),
                             conversation_context=context,
-                            company_name=company_name if is_welcome else None
+                            company_name=company_name if msg_data.get('message') == "__SYSTEM_WELCOME__" else None
                         ):
                             buffer += token
                             
                             # Only send when buffer has meaningful content or complete sentences
-                            should_send = (
-                                len(buffer) >= 60 or 
-                                any(char in buffer[-2:] for char in ['.', '!', '?', '\n'])
-                            )
-                            
-                            if should_send:
-                                if cid.startswith('twilio_'):
+                            if len(buffer) >= 60 or any(char in buffer[-2:] for char in ['.', '!', '?', '\n']):
+                                # Send audio through WebRTC for Twilio clients
+                                # This is the key part - send through WebRTC, not TwiML
+                                if client_id.startswith('twilio_'):
                                     try:
-                                        from routes.twilio_handlers import handle_ai_response
-                                        await handle_ai_response(cid, buffer)
+                                        # Convert text to audio using your TTS service
+                                        audio_data = await convert_text_to_audio(buffer)
+                                        
+                                        # Find the WebSocket connection
+                                        ws = manager.active_connections.get(client_id)
+                                        if ws and not manager.websocket_is_closed(ws):
+                                            # Send media message format that Twilio expects
+                                            await ws.send_text(json.dumps({
+                                                "event": "media",
+                                                "streamSid": "WSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                                                "media": {
+                                                    "track": "outbound",
+                                                    "payload": audio_data  # Base64 encoded audio
+                                                }
+                                            }))
+                                            
+                                            logger.info(f"Sent audio response through WebRTC: {buffer[:50]}...")
                                     except Exception as e:
-                                        logger.error(f"Error in speech synthesis: {str(e)}")
+                                        logger.error(f"Error sending audio: {str(e)}")
                                 
                                 buffer = ""  # Clear buffer after sending
                         
-                        # Send any remaining buffer content
+                        # Send any remaining buffer
                         if buffer.strip():
-                            if cid.startswith('twilio_'):
-                                try:
-                                    from routes.twilio_handlers import handle_ai_response
-                                    await handle_ai_response(cid, buffer)
-                                except Exception as e:
-                                    logger.error(f"Error in speech synthesis: {str(e)}")
+                            audio_data = await convert_text_to_audio(buffer)
+                                        
+                            # Find the WebSocket connection
+                            ws = manager.active_connections.get(client_id)
+                            if ws and not manager.websocket_is_closed(ws):
+                                # Send media message format that Twilio expects
+                                await ws.send_text(json.dumps({
+                                    "event": "media",
+                                    "streamSid": "WSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+                                    "media": {
+                                        "track": "outbound",
+                                        "payload": audio_data  # Base64 encoded audio
+                                    }
+                                }))
+                                            
+                                logger.info(f"Sent audio response through WebRTC: {buffer[:50]}...")
+                            # Similar code to send final audio...
                         
-                        logger.info(f"[{connection_id}] Complete response processed in {time.time() - response_time:.2f}s")
+                        logger.info(f"Complete response processed in {time.time() - response_time:.2f}s")
                     except Exception as e:
-                        logger.error(f"[{connection_id}] Error processing response: {str(e)}")
+                        logger.error(f"Error processing response: {str(e)}")
                 
-                # Start processing in the background
+                # Start processing in background
                 asyncio.create_task(process_response())
-                
-                # Return quickly to allow the call to continue
                 return True
             except Exception as e:
-                logger.error(f"[{connection_id}] Error in buffered message processing: {str(e)}")
+                logger.error(f"Error in buffered message processing: {str(e)}")
                 return False
             
             

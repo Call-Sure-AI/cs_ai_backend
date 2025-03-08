@@ -135,7 +135,7 @@ async def handle_incoming_call(request: Request):
         }
         
         # Register call with TTS service
-        await tts_service.register_call(call_sid, peer_id)
+        # await tts_service.register_call(call_sid, peer_id)
         
         # Get host from headers or base URL
         host = request.headers.get("host") or request.base_url.hostname
@@ -156,8 +156,8 @@ async def handle_incoming_call(request: Request):
         resp.append(start)
         
         # Add initial greeting after stream is established
-        resp.say('Hello, I am your AI assistant. How can I help you today?', voice='alice')
-        resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
+        # resp.say('Hello, I am your AI assistant. How can I help you today?', voice='alice')
+        # resp.gather(input='speech', timeout=20, action='/api/v1/twilio/gather')
 
         # Log the generated TwiML
         twiml_response = resp.to_xml()
