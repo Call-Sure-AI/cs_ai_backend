@@ -12,6 +12,7 @@ from routes.webrtc_handlers import router as webrtc_router
 from services.webrtc.manager import WebRTCManager
 from services.speech.stt_service import SpeechToTextService
 from services.speech.tts_service import TextToSpeechService
+import time
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
