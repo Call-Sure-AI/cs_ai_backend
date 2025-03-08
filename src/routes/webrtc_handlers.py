@@ -367,100 +367,55 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 # Get necessary resources
                 ws = manager.active_connections.get(cid)
                 if not ws or manager.websocket_is_closed(ws):
-                    logger.warning(f"[{connection_id}] Client disconnected before processing")
+                    logger.warning(f"Client disconnected before processing")
                     return
                     
                 agent_res = manager.agent_resources.get(cid)
                 chain = agent_res['chain']
                 rag_service = agent_res['rag_service']
                 
-                # Get conversation context
-                conv = await manager._get_or_create_conversation(company_info['id'], cid)
-                context = await manager.agent_manager.get_conversation_context(conv['id'])
-                
-                # Get company name for welcome message
-                company_name = company_info.get('name', 'our service')
-                
                 # Create a background task to process response in chunks
                 async def process_response():
                     buffer = ""
                     response_time = time.time()
-                    msg_id = str(response_time)
                     
                     # Use company name for welcome message
-                    # question = msg_data.get('message', '')
-                    # is_welcome = question == "__SYSTEM_WELCOME__"
+                    question = msg_data.get('message', '')
+                    is_welcome = question == "__SYSTEM_WELCOME__"
                     
-                    # Stream answer from AI with buffering to prevent token-by-token responses
+                    # Stream answer from AI with buffering
                     try:
                         async for token in rag_service.get_answer_with_chain(
                             chain=chain,
-                            question=msg_data.get('message', ''),
-                            conversation_context=context,
-                            company_name=company_name if msg_data.get('message') == "__SYSTEM_WELCOME__" else None
+                            question=question,
+                            company_name="Callsure AI" if is_welcome else None
                         ):
                             buffer += token
                             
-                            # Only send when buffer has meaningful content or complete sentences
-                            if len(buffer) >= 60 or any(char in buffer[-2:] for char in ['.', '!', '?', '\n']):
-                                # Send audio through WebRTC for Twilio clients
-                                # This is the key part - send through WebRTC, not TwiML
-                                if client_id.startswith('twilio_'):
-                                    try:
-                                        # Convert text to audio using your TTS service
-                                        audio_data = await convert_text_to_audio(buffer)
-                                        
-                                        # Find the WebSocket connection
-                                        ws = manager.active_connections.get(client_id)
-                                        if ws and not manager.websocket_is_closed(ws):
-                                            # Send media message format that Twilio expects
-                                            await ws.send_text(json.dumps({
-                                                "event": "media",
-                                                "streamSid": "WSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-                                                "media": {
-                                                    "track": "outbound",
-                                                    "payload": audio_data  # Base64 encoded audio
-                                                }
-                                            }))
-                                            
-                                            logger.info(f"Sent audio response through WebRTC: {buffer[:50]}...")
-                                    except Exception as e:
-                                        logger.error(f"Error sending audio: {str(e)}")
-                                
-                                buffer = ""  # Clear buffer after sending
+                            # Only log tokens, don't try to send via WebRTC
+                            # We'll use TwiML for actual audio response
+                            logger.info(f"AI response token: {token}")
                         
-                        # Send any remaining buffer
-                        if buffer.strip():
-                            audio_data = await convert_text_to_audio(buffer)
-                                        
-                            # Find the WebSocket connection
-                            ws = manager.active_connections.get(client_id)
-                            if ws and not manager.websocket_is_closed(ws):
-                                # Send media message format that Twilio expects
-                                await ws.send_text(json.dumps({
-                                    "event": "media",
-                                    "streamSid": "WSXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-                                    "media": {
-                                        "track": "outbound",
-                                        "payload": audio_data  # Base64 encoded audio
-                                    }
-                                }))
-                                            
-                                logger.info(f"Sent audio response through WebRTC: {buffer[:50]}...")
-                            # Similar code to send final audio...
+                        # Log the full response
+                        logger.info(f"Complete AI response: {buffer}")
+                        
+                        # Here's the key - we don't need to try sending audio via WebRTC
+                        # The TwiML <Say> element will handle it when we get to the gather endpoint
                         
                         logger.info(f"Complete response processed in {time.time() - response_time:.2f}s")
                     except Exception as e:
                         logger.error(f"Error processing response: {str(e)}")
                 
-                # Start processing in background
+                # Start processing in the background
                 asyncio.create_task(process_response())
+                
+                # Return quickly to allow the call to continue
                 return True
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
                 return False
-            
-            
+        
+        
         # Main message processing loop
         while not websocket_closed:
             try:
