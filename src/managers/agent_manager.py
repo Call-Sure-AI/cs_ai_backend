@@ -19,6 +19,43 @@ class AgentManager:
         self.conversation_cache = {}
         self._initialization_locks = {}
 
+    # async def ensure_base_agent(self, company_id: str) -> Optional[Dict[str, Any]]:
+    #     """Ensure base agent exists for company"""
+    #     try:
+    #         base_agent = await self.get_base_agent(company_id)
+    #         if base_agent:
+    #             return base_agent
+
+    #         # Create default base agent
+    #         agent_id = str(uuid.uuid4())
+    #         base_agent = Agent(
+    #             id=agent_id,
+    #             company_id=company_id,
+    #             name="Base Agent",
+    #             type="base",
+    #             prompt="You are a helpful AI assistant.",
+    #             confidence_threshold=0.0,
+    #             active=True
+    #         )
+
+    #         self.db.add(base_agent)
+    #         self.db.commit()
+
+    #         agent_info = {
+    #             "id": agent_id,
+    #             "name": base_agent.name,
+    #             "type": base_agent.type,
+    #             "prompt": base_agent.prompt,
+    #             "confidence_threshold": base_agent.confidence_threshold
+    #         }
+
+    #         self.agent_cache[agent_id] = agent_info
+    #         return agent_info
+
+    #     except Exception as e:
+    #         logger.error(f"Error ensuring base agent: {str(e)}")
+    #         return None
+
     async def ensure_base_agent(self, company_id: str) -> Optional[Dict[str, Any]]:
         """Ensure base agent exists for company"""
         try:
@@ -26,11 +63,24 @@ class AgentManager:
             if base_agent:
                 return base_agent
 
-            # Create default base agent
+            # Get company to get the user_id
+            company = self.db.query(Company).filter_by(id=company_id).first()
+            if not company:
+                logger.error(f"Company {company_id} not found")
+                return None
+                
+            # Get user_id from company
+            user_id = company.user_id
+            if not user_id:
+                logger.error(f"No user_id found for company {company_id}")
+                return None
+
+            # Create default base agent with user_id from company
             agent_id = str(uuid.uuid4())
             base_agent = Agent(
                 id=agent_id,
                 company_id=company_id,
+                user_id=user_id,  # Use user_id from company
                 name="Base Agent",
                 type="base",
                 prompt="You are a helpful AI assistant.",
@@ -54,6 +104,7 @@ class AgentManager:
 
         except Exception as e:
             logger.error(f"Error ensuring base agent: {str(e)}")
+            self.db.rollback()  # Add rollback on exception
             return None
 
     async def initialize_company_agents(self, company_id: str) -> None:
