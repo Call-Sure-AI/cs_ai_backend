@@ -172,11 +172,62 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
 
         # (Assume company and agent initialization occur before this handler is called.)
-
-        # Connect client
+        connection_manager = webrtc_manager.connection_manager
+        if not connection_manager:
+            logger.error(f"[{connection_id}] Connection manager not found in app state!")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+            
+        # Initialize company for Twilio calls
+        company = db.query(Company).filter_by(api_key=company_api_key).first()
+        if not company:
+            logger.error(f"[{connection_id}] Company not found for API key: {company_api_key}")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+            
+        # Set company info from the database
+        company_info = {
+            "id": company.id,
+            "name": company.name or "Customer Support"  # Fallback name
+        }
+        
+        connection_manager.client_companies[client_id] = company_info
+        
+        # Connect client to manager
         await connection_manager.connect(websocket, client_id)
         logger.info(f"[{connection_id}] Client {client_id} connected to manager")
         connected = True
+        
+        # Initialize agent resources
+        agent_record = db.query(Agent).filter_by(id=agent_id).first()
+        if not agent_record:
+            logger.error(f"[{connection_id}] Agent not found with ID: {agent_id}")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+            
+        agent = {
+            "id": agent_record.id,
+            "name": agent_record.name,
+            "type": agent_record.type,
+            "prompt": agent_record.prompt,
+            "confidence_threshold": agent_record.confidence_threshold
+        }
+        
+        # Initialize agent resources for this client
+        success = await connection_manager.initialize_agent_resources(client_id, company_info["id"], agent)
+        if not success:
+            logger.error(f"[{connection_id}] Failed to initialize agent resources")
+            await websocket.close(code=1011)
+            websocket_closed = True
+            return
+        
+        # # Connect client
+        # await connection_manager.connect(websocket, client_id)
+        # logger.info(f"[{connection_id}] Client {client_id} connected to manager")
+        # connected = True
 
         # Define transcription handler (capture app via nonlocal)
         async def handle_transcription(session_id, transcribed_text):
