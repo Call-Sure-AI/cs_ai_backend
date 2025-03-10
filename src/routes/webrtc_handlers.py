@@ -394,7 +394,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                                 }
                                 
                                 # Process welcome message using the buffered approach
-                                await process_buffered_message(connection_manager, client_id, welcome_data)
+                                await process_buffered_message(connection_manager, client_id, welcome_data, app)
                                 welcome_sent = True
                             
                             
