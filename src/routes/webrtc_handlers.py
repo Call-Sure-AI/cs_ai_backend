@@ -1,5 +1,5 @@
 # src/routes/webrtc_handlers.py
-from fastapi import APIRouter, WebSocket, Depends, HTTPException, Request
+from fastapi import APIRouter, WebSocket, Depends, HTTPException, Request, FastAPI
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional
 import logging
@@ -105,10 +105,9 @@ import subprocess
 import base64
 import json
 import time
-from app import app
-import logging
 
-logger = logging.getLogger(__name__)
+app = WebSocket.app
+
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
     process = await asyncio.create_subprocess_exec(
@@ -124,7 +123,7 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
 
     return audio_output
 
-async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_manager):
+async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_manager, app: FastAPI):
     try:
         ws = connection_manager.active_connections.get(client_id)
         if not ws or connection_manager.websocket_is_closed(ws):
@@ -303,7 +302,8 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             
             is_processing = False
         
-        
+        app = websocket.app
+        connection_manager = app.state.connection_manager
         
         async def process_buffered_message(manager, client_id, msg_data):
             """Process a message with buffer to avoid token-by-token transmission"""
@@ -338,7 +338,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 
                 # Store the response in the application cache, accessible by app.state
                 # Use the FastAPI app instance directly
-                from app import app  # Import your FastAPI app instance
                 
                 # Store in app state cache
                 if not hasattr(app.state, "response_cache"):
@@ -352,7 +351,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 # Generate TTS audio as before
                 tts_audio = await tts_service.generate_audio(buffer)
                 if tts_audio:
-                    await send_audio_to_webrtc(client_id, tts_audio, manager)
+                    await send_audio_to_webrtc(client_id, audio_data, connection_manager, app)
                     
                 return True
             except Exception as e:
