@@ -84,31 +84,6 @@ class ConnectionManager:
         asyncio.create_task(self._process_batches())
 
 
-    # async def send_json(self, websocket: WebSocket, data: dict) -> bool:
-    #     """Send JSON data with proper error handling and connection validation"""
-    #     try:
-    #         if not websocket or self.websocket_is_closed(websocket):
-    #             logger.warning("Attempted to send to closed websocket")
-    #             return False
-                
-    #         # Convert to JSON string with UUID handling
-    #         json_str = json.dumps(data, cls=UUIDEncoder)
-            
-    #         # Send with timeout to prevent hanging
-    #         await asyncio.wait_for(
-    #             websocket.send_text(json_str),
-    #             timeout=5.0  # 5 second timeout
-    #         )
-    #         return True
-            
-    #     except asyncio.TimeoutError:
-    #         logger.error("Timeout sending JSON message")
-    #         return False
-    #     except Exception as e:
-    #         logger.error(f"Error sending JSON: {str(e)}", exc_info=True)
-    #         return False
-
-
     async def send_json(self, websocket: WebSocket, data: dict) -> bool:
         """Send JSON data with improved error handling and connection validation"""
         try:

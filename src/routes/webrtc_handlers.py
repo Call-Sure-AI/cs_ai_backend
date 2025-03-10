@@ -40,161 +40,6 @@ def initialize_app(app):
     
     logger.info("Application initialized with connection and WebRTC managers")
 
-# @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
-# async def signaling_endpoint(
-#     websocket: WebSocket,
-#     peer_id: str,
-#     company_api_key: str,
-#     agent_id: str,
-#     db: Session = Depends(get_db)
-# ):
-#     """WebRTC signaling endpoint handler with detailed timing logs"""
-#     connection_start = time.time()
-#     websocket_closed = False
-#     peer = None
-    
-#     try:
-#         # Initialize the webrtc manager with the connection manager if not already set
-#         if not webrtc_manager.connection_manager and hasattr(websocket.app.state, 'connection_manager'):
-#             webrtc_manager.connection_manager = websocket.app.state.connection_manager
-#             logger.info("WebRTC manager linked to connection manager")
-        
-#         # Validate company before accepting connection
-#         company_validation_start = time.time()
-#         company = db.query(Company).filter_by(api_key=company_api_key).first()
-#         company_validation_time = time.time() - company_validation_start
-#         logger.info(f"Company validation took {company_validation_time:.3f}s")
-        
-#         if not company:
-#             logger.warning(f"Invalid API key: {company_api_key}")
-#             try:
-#                 await websocket.close(code=4001)
-#                 websocket_closed = True
-#             except Exception as e:
-#                 logger.error(f"Error closing websocket: {str(e)}")
-#             return
-            
-#         logger.info(f"Company validated: {company.name}")
-        
-#         # Initialize services if needed
-#         webrtc_manager.initialize_services(db, vector_store)
-        
-#         # Set up company info
-#         company_info = {
-#             "id": company.id,
-#             "name": company.name,
-#             "settings": company.settings
-#         }
-        
-#         # Accept WebSocket connection
-#         connect_start = time.time()
-#         try:
-#             await websocket.accept()
-#             peer = await webrtc_manager.register_peer(peer_id, company_info, websocket)
-#             connect_time = time.time() - connect_start
-#             logger.info(f"WebRTC connection setup took {connect_time:.3f}s")
-#         except Exception as e:
-#             logger.error(f"Error accepting connection: {str(e)}")
-#             websocket_closed = True
-#             return
-        
-#         # Send ICE servers configuration
-#         try:
-#             await peer.send_message({
-#                 'type': 'config',
-#                 'ice_servers': [
-#                     {'urls': ['stun:stun.l.google.com:19302']},
-#                     # Add TURN servers here for production
-#                 ]
-#             })
-#         except Exception as e:
-#             logger.error(f"Error sending ICE config: {str(e)}")
-#             websocket_closed = True
-#             return
-        
-#         # Main message loop
-#         while not websocket_closed:
-#             loop_start = time.time()
-#             message_type = None  # Initialize message_type at the start of each loop
-            
-#             try:
-#                 # Message reception with timeout
-#                 receive_start = time.time()
-#                 data = await asyncio.wait_for(
-#                     websocket.receive_json(),
-#                     timeout=settings.WS_HEARTBEAT_INTERVAL
-#                 )
-#                 receive_time = time.time() - receive_start
-                
-#                 # Process received message
-#                 process_start = time.time()
-#                 message_type = data.get('type')
-                
-#                 if message_type == 'signal':
-#                     # Handle WebRTC signaling
-#                     to_peer = data.get('to_peer')
-#                     if to_peer:
-#                         await webrtc_manager.relay_signal(
-#                             peer_id, to_peer, data.get('data', {})
-#                         )
-#                 elif message_type == 'audio':
-#                     # Handle audio messages
-#                     result = await webrtc_manager.handle_audio_message(peer_id, data)
-#                     # Send result back to the peer
-#                     await peer.send_message({
-#                         "type": "audio_response",
-#                         "data": result
-#                     })
-#                 elif message_type == 'message':
-#                     # Handle streaming messages directly using webrtc_manager
-#                     await webrtc_manager.process_streaming_message(peer_id, data)
-#                 elif message_type == 'ping':
-#                     await peer.send_message({'type': 'pong'})
-                    
-#                 process_time = time.time() - process_start
-                
-#                 # Only log detailed timing for non-audio messages to reduce log volume
-#                 if message_type and message_type != 'audio' or (message_type == 'audio' and data.get('action') != 'audio_chunk'):
-#                     logger.info(f"Message processing took {process_time:.3f}s for type {message_type}")
-                
-#                 # Only log complete cycle for non-audio-chunk messages to reduce log volume
-#                 if message_type and message_type != 'audio' or (message_type == 'audio' and data.get('action') != 'audio_chunk'):
-#                     loop_time = time.time() - loop_start
-#                     logger.info(f"Complete message cycle took {loop_time:.3f}s")
-                
-#             except asyncio.TimeoutError:
-#                 # Send heartbeat
-#                 try:
-#                     ping_start = time.time()
-#                     await peer.send_message({"type": "ping"})
-#                     logger.debug(f"Heartbeat ping sent in {time.time() - ping_start:.3f}s")
-#                 except Exception as e:
-#                     logger.error(f"Error sending heartbeat: {str(e)}")
-#                     websocket_closed = True
-#                     break
-#             except Exception as e:
-#                 logger.error(f"Error in message processing: {str(e)}")
-#                 websocket_closed = True
-#                 break
-            
-#     except Exception as e:
-#         logger.error(f"Error in signaling endpoint: {str(e)}")
-#     finally:
-#         # Clean up peer connection
-#         try:
-#             cleanup_start = time.time()
-#             await webrtc_manager.unregister_peer(peer_id)
-#             cleanup_time = time.time() - cleanup_start
-            
-#             total_time = time.time() - connection_start
-#             logger.info(
-#                 f"Connection ended for peer {peer_id}. "
-#                 f"Duration: {total_time:.3f}s, "
-#                 f"Cleanup time: {cleanup_time:.3f}s"
-#             )
-#         except Exception as e:
-#             logger.error(f"Error during cleanup: {str(e)}")
-
 import logging
 import base64  # To log encoded audio for debugging
 
@@ -356,59 +201,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             
             is_processing = False
         
-        # async def process_buffered_message(manager, cid, msg_data):
-        #     """Process a message with buffer to avoid token-by-token transmission"""
-        #     try:
-        #         # Get necessary resources
-        #         ws = manager.active_connections.get(cid)
-        #         if not ws or manager.websocket_is_closed(ws):
-        #             logger.warning(f"Client disconnected before processing")
-        #             return
-                    
-        #         agent_res = manager.agent_resources.get(cid)
-        #         chain = agent_res['chain']
-        #         rag_service = agent_res['rag_service']
-                
-        #         # Create a background task to process response in chunks
-        #         async def process_response():
-        #             buffer = ""
-        #             response_time = time.time()
-                    
-        #             # Use company name for welcome message
-        #             question = msg_data.get('message', '')
-        #             is_welcome = question == "__SYSTEM_WELCOME__"
-                    
-        #             # Stream answer from AI with buffering
-        #             try:
-        #                 async for token in rag_service.get_answer_with_chain(
-        #                     chain=chain,
-        #                     question=question,
-        #                     company_name="Callsure AI" if is_welcome else None
-        #                 ):
-        #                     buffer += token
-                            
-        #                     # Only log tokens, don't try to send via WebRTC
-        #                     # We'll use TwiML for actual audio response
-        #                     logger.info(f"AI response token: {token}")
-                        
-        #                 # Log the full response
-        #                 logger.info(f"Complete AI response: {buffer}")
-                        
-        #                 # Here's the key - we don't need to try sending audio via WebRTC
-        #                 # The TwiML <Say> element will handle it when we get to the gather endpoint
-                        
-        #                 logger.info(f"Complete response processed in {time.time() - response_time:.2f}s")
-        #             except Exception as e:
-        #                 logger.error(f"Error processing response: {str(e)}")
-                
-        #         # Start processing in the background
-        #         asyncio.create_task(process_response())
-                
-        #         # Return quickly to allow the call to continue
-        #         return True
-        #     except Exception as e:
-        #         logger.error(f"Error in buffered message processing: {str(e)}")
-        #         return False
         
         async def process_buffered_message(manager, client_id, msg_data):
             """
@@ -430,6 +222,11 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 ):
                     buffer += token
 
+                app.state.response_cache[client_id] = {
+                    "text": buffer,
+                    "timestamp": time.time()
+                }
+                
                 logger.info(f"Complete AI response: {buffer}")
 
                 # ✅ Generate TTS audio
