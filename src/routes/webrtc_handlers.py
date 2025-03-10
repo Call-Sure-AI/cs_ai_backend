@@ -142,7 +142,7 @@ async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_man
 
         # Base64 encode converted audio
         payload = base64.b64encode(converted_audio).decode('utf-8')
-
+        from app import app
         # Retrieve correct streamSid from your stored mappings
         stream_sid = app.state.client_call_mapping.get(client_id)
         if not stream_sid:
