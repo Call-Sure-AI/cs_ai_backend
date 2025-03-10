@@ -16,15 +16,10 @@ class TextToSpeechService:
         self.chunk_size = 32 * 1024  # 32KB per chunk for streaming
         self.chunk_delay = 0.01  # 10ms delay to prevent overloading
         
+    
     async def generate_audio(self, text: str) -> Optional[bytes]:
         """
         Converts text to speech using ElevenLabs API.
-        
-        Args:
-            text (str): The input text to be converted into speech.
-        
-        Returns:
-            Optional[bytes]: The audio content in bytes or None if an error occurs.
         """
         try:
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
@@ -43,16 +38,24 @@ class TextToSpeechService:
                 }
             }
 
+            logger.info(f"Sending request to ElevenLabs: {payload}")
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as response:
+                    response_data = await response.read()
+                    
                     if response.status == 200:
-                        return await response.read()
+                        logger.info(f"Received audio response from ElevenLabs, size: {len(response_data)} bytes")
+                        return response_data
                     else:
-                        logger.error(f"ElevenLabs TTS API error: {response.status}")
+                        error_message = await response.text()
+                        logger.error(f"ElevenLabs API error: {response.status} - {error_message}")
                         return None
         except Exception as e:
             logger.error(f"Error generating audio with ElevenLabs: {str(e)}")
             return None
+
+    
     
     async def stream_text_to_speech(self, text: str):
         """
