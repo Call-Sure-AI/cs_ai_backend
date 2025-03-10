@@ -588,8 +588,8 @@ async def handle_incoming_call(request: Request):
 
         # WebRTC Stream URL
         host = request.headers.get("host") or request.base_url.hostname
-        company_api_key = "your_company_api_key"
-        agent_id = "your_agent_id"
+        company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
+        agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
         stream_url = f"wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}"
 
         logger.info(f"Setting up Twilio <Stream> to: {stream_url}")
