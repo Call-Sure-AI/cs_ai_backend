@@ -42,58 +42,141 @@ def initialize_app(app):
 
 
 
-async def send_audio_to_webrtc(client_id, audio_data):
-    """
-    Sends generated audio (TTS output) to the WebRTC client using Twilio Media Streams protocol.
+# async def send_audio_to_webrtc(client_id, audio_data):
+#     """
+#     Sends generated audio (TTS output) to the WebRTC client using Twilio Media Streams protocol.
     
-    Args:
-        client_id: The ID of the WebRTC client.
-        audio_data: The raw audio bytes to be sent.
-    """
+#     Args:
+#         client_id: The ID of the WebRTC client.
+#         audio_data: The raw audio bytes to be sent.
+#     """
+#     try:
+#         ws = webrtc_manager.connection_manager.active_connections.get(client_id)
+#         if not ws or webrtc_manager.connection_manager.websocket_is_closed(ws):
+#             logger.warning(f"Client {client_id} disconnected before receiving audio.")
+#             return False
+        
+#         # Convert audio to the format expected by Twilio (if needed)
+#         # This likely requires converting from whatever format ElevenLabs provides
+#         # to audio/x-mulaw @ 8000Hz
+        
+#         # You might need a conversion function here:
+#         # audio_data = convert_to_mulaw_8000hz(audio_data)
+        
+#         # Encode the audio as base64
+#         import base64
+#         payload = base64.b64encode(audio_data).decode('utf-8')
+        
+#         # Format as a Twilio Media Streams message
+#         message = {
+#             "event": "media",
+#             "streamSid": client_id.replace("twilio_", "MZ"),  # Construct StreamSid if needed
+#             "media": {
+#                 "payload": payload
+#             }
+#         }
+        
+#         # Send the formatted message
+#         await ws.send_text(json.dumps(message))
+        
+#         # Send a mark event after the media to know when it's done playing
+#         mark_message = {
+#             "event": "mark",
+#             "streamSid": client_id.replace("twilio_", "MZ"),
+#             "mark": {
+#                 "name": f"mark_{time.time()}"  # Unique identifier
+#             }
+#         }
+#         await ws.send_text(json.dumps(mark_message))
+        
+#         logger.info(f"Successfully sent TTS-generated audio to WebRTC client {client_id}")
+#         return True
+#     except Exception as e:
+#         logger.error(f"Error sending audio to WebRTC client {client_id}: {str(e)}")
+#         return False
+
+
+
+import base64
+import json
+import subprocess
+
+
+async def convert_audio_to_mulaw(audio_bytes: bytes) -> bytes:
+    """Convert audio bytes to mulaw format for Twilio."""
     try:
-        ws = webrtc_manager.connection_manager.active_connections.get(client_id)
-        if not ws or webrtc_manager.connection_manager.websocket_is_closed(ws):
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-i", "pipe:0",
+                "-ar", "8000",
+                "-ac", "1",
+                "-f", "mulaw",
+                "pipe:1"
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        converted_audio, error = process.communicate(input=audio_bytes)
+        if process.returncode != 0:
+            logger.error(f"FFmpeg conversion error: {error.decode()}")
+            return None
+        return converted_audio
+    except Exception as e:
+        logger.error(f"Audio conversion error: {str(e)}")
+        return None
+
+async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_manager):
+    try:
+        ws = connection_manager.active_connections.get(client_id)
+        if not ws or connection_manager.websocket_is_closed(ws):
             logger.warning(f"Client {client_id} disconnected before receiving audio.")
             return False
-        
-        # Convert audio to the format expected by Twilio (if needed)
-        # This likely requires converting from whatever format ElevenLabs provides
-        # to audio/x-mulaw @ 8000Hz
-        
-        # You might need a conversion function here:
-        # audio_data = convert_to_mulaw_8000hz(audio_data)
-        
-        # Encode the audio as base64
-        import base64
-        payload = base64.b64encode(audio_data).decode('utf-8')
-        
-        # Format as a Twilio Media Streams message
-        message = {
+
+        # Convert ElevenLabs audio to mulaw @ 8000Hz
+        converted_audio = await convert_audio_to_mulaw(audio_data)
+        if not converted_audio:
+            logger.error(f"Audio conversion failed for client {client_id}")
+            return False
+
+        # Base64 encode converted audio
+        payload = base64.b64encode(converted_audio).decode('utf-8')
+
+        # Retrieve correct streamSid from your stored mappings
+        stream_sid = app.state.client_call_mapping.get(client_id)
+        if not stream_sid:
+            logger.error(f"Stream SID not found for client {client_id}")
+            return False
+
+        # Send media message back to Twilio
+        media_message = {
             "event": "media",
-            "streamSid": client_id.replace("twilio_", "MZ"),  # Construct StreamSid if needed
+            "streamSid": stream_sid,
             "media": {
                 "payload": payload
             }
         }
-        
-        # Send the formatted message
-        await ws.send_text(json.dumps(message))
-        
-        # Send a mark event after the media to know when it's done playing
+
+        await ws.send_text(json.dumps(media_message))
+
+        # Send a mark message to track playback completion
         mark_message = {
             "event": "mark",
-            "streamSid": client_id.replace("twilio_", "MZ"),
+            "streamSid": stream_sid,
             "mark": {
-                "name": f"mark_{time.time()}"  # Unique identifier
+                "name": f"mark_{int(time.time())}"
             }
         }
         await ws.send_text(json.dumps(mark_message))
-        
+
         logger.info(f"Successfully sent TTS-generated audio to WebRTC client {client_id}")
         return True
+
     except Exception as e:
         logger.error(f"Error sending audio to WebRTC client {client_id}: {str(e)}")
         return False
+
 
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
