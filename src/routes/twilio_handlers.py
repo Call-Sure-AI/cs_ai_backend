@@ -36,19 +36,24 @@ active_calls: Dict[str, Dict[str, Any]] = {}
 @router.post("/incoming-call")
 async def handle_incoming_call(request: Request):
     """Handles incoming Twilio voice calls with WebRTC integration."""
-    logger.info(f"Received incoming call from {request.client.host}")
+    logger.info(f"[TWILIO_DEBUG] Received incoming call from {request.client.host}")
 
     try:
         form_data = await request.form()
-        logger.info(f"Form data: {dict(form_data)}")
+        form_dict = dict(form_data)
+        logger.info(f"[TWILIO_DEBUG] Form data: {form_dict}")
 
         # Extract call details
         call_sid = form_data.get("CallSid", "unknown_call")
         caller = form_data.get("From", "unknown")
 
+        called = form_data.get("To", "unknown")
+        logger.info(f"[TWILIO_DEBUG] Call details: SID={call_sid}, From={caller}, To={called}")
+
+
         # Generate a unique WebRTC peer ID
         peer_id = f"twilio_{str(uuid.uuid4())}"
-        logger.info(f"Generated peer_id: {peer_id}")
+        logger.info(f"[TWILIO_DEBUG] Generated peer_id: {peer_id}")
 
         global active_calls
         if not 'active_calls' in globals():
@@ -75,7 +80,7 @@ async def handle_incoming_call(request: Request):
         agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
 
         stream_url = f"wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}"
-        logger.info(f"Setting up stream URL: {stream_url}")
+        logger.info(f"[TWILIO_DEBUG] Setting up stream URL: {stream_url}")
 
         # Create TwiML response
         resp = VoiceResponse()
@@ -90,6 +95,9 @@ async def handle_incoming_call(request: Request):
 
         # Gather input (keeps Twilio call active while WebRTC streams responses)
         resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
+        resp_xml = resp.to_xml()
+        logger.info(f"[TWILIO_DEBUG] TwiML response: {resp_xml}")
+
 
         return Response(content=resp.to_xml(), media_type="application/xml")
 

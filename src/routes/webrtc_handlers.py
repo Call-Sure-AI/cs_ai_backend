@@ -39,10 +39,13 @@ from fastapi import FastAPI
 from datetime import datetime
 import logging
 
-# (Assume your other imports remain unchanged.)
-logger = logging.getLogger(__name__)
-
 async def convert_to_twilio_format(input_audio_bytes: bytes):
+    """Convert audio to Twilio compatible format with detailed logging"""
+    logger.info(f"Starting audio conversion, input size: {len(input_audio_bytes)} bytes")
+    
+    # Log first few bytes of input for debugging
+    logger.debug(f"Input audio header (first 20 bytes): {input_audio_bytes[:20].hex()}")
+    
     process = await asyncio.create_subprocess_exec(
         'ffmpeg', '-y', '-f', 'mp3', '-i', 'pipe:0',
         '-ar', '8000', '-ac', '1', '-c:a', 'pcm_mulaw',
@@ -51,48 +54,109 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
+    
     audio_output, error = await process.communicate(input=input_audio_bytes)
+    
     if process.returncode != 0:
-        raise Exception(f"Audio conversion failed: {error.decode()}")
+        error_msg = error.decode()
+        logger.error(f"Audio conversion failed with code {process.returncode}: {error_msg}")
+        return None
+    
+    # Log conversion success and output details
+    logger.info(f"Audio conversion successful, output size: {len(audio_output)} bytes")
+    logger.debug(f"Output audio header (first 20 bytes): {audio_output[:20].hex()}")
+    
+    # Check if output has WAV header and remove it if necessary
+    if len(audio_output) > 44 and audio_output.startswith(b'RIFF'):
+        logger.info("Removing WAV header (44 bytes) from converted audio")
+        audio_output = audio_output[44:]
+        logger.info(f"Audio size after header removal: {len(audio_output)} bytes")
+    
     return audio_output
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
+    """Send audio to Twilio WebRTC with detailed logging and error handling"""
+    logger.info(f"[AUDIO_DEBUG] Sending audio to WebRTC, client: {client_id}, size: {len(audio_data)} bytes")
+    
     try:
+        # Check websocket connection
         ws = connection_manager.active_connections.get(client_id)
-        if not ws or connection_manager.websocket_is_closed(ws):
-            logger.warning(f"WebSocket closed or missing for client {client_id}")
+        if not ws:
+            logger.error(f"[AUDIO_DEBUG] WebSocket missing for client {client_id}")
             return False
+            
+        if connection_manager.websocket_is_closed(ws):
+            logger.error(f"[AUDIO_DEBUG] WebSocket closed for client {client_id}")
+            return False
+            
+        logger.info(f"[AUDIO_DEBUG] WebSocket connection valid for {client_id}")
 
+        # Convert audio
+        logger.info(f"[AUDIO_DEBUG] Starting audio conversion for {client_id}")
         converted_audio = await convert_to_twilio_format(audio_data)
+        
         if not converted_audio:
-            logger.error("Audio conversion returned empty audio")
+            logger.error(f"[AUDIO_DEBUG] Audio conversion returned empty audio for {client_id}")
             return False
+            
+        logger.info(f"[AUDIO_DEBUG] Audio conversion successful, size: {len(converted_audio)} bytes")
 
+        # Encode to base64
         payload = base64.b64encode(converted_audio).decode('utf-8')
+        logger.info(f"[AUDIO_DEBUG] Base64 encoded payload size: {len(payload)} chars")
+
+        # Get stream_sid
         stream_sid = app.state.client_call_mapping.get(client_id)
         if not stream_sid:
-            logger.error(f"No stream_sid mapping found for client {client_id}")
+            logger.error(f"[AUDIO_DEBUG] No stream_sid mapping found for client {client_id}")
             return False
+            
+        logger.info(f"[AUDIO_DEBUG] Found stream_sid: {stream_sid} for client {client_id}")
 
+        # Create media message
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
-            "media": {"payload": payload}
+            "media": {
+                "payload": payload
+            }
         }
+        
+        # Log message structure (without full payload)
+        debug_msg = media_message.copy()
+        if "payload" in debug_msg.get("media", {}):
+            payload_len = len(debug_msg["media"]["payload"])
+            debug_msg["media"]["payload"] = f"[{payload_len} chars]"
+        logger.info(f"[AUDIO_DEBUG] Sending media message: {json.dumps(debug_msg)}")
+        
+        # Send the message
+        send_start = time.time()
         await ws.send_text(json.dumps(media_message))
+        send_time = time.time() - send_start
+        logger.info(f"[AUDIO_DEBUG] Media message sent in {send_time:.3f}s")
 
+        # Send mark message for tracking
+        mark_name = f"mark_{int(time.time())}"
         mark_message = {
             "event": "mark",
             "streamSid": stream_sid,
-            "mark": {"name": f"mark_{int(time.time())}"}
+            "mark": {
+                "name": mark_name
+            }
         }
+        
+        logger.info(f"[AUDIO_DEBUG] Sending mark message: {json.dumps(mark_message)}")
         await ws.send_text(json.dumps(mark_message))
+        logger.info(f"[AUDIO_DEBUG] Mark message sent successfully")
+        
         return True
 
     except Exception as e:
-        logger.error(f"Error sending audio to WebRTC client {client_id}: {e}")
+        logger.error(f"[AUDIO_DEBUG] Error sending audio to WebRTC client {client_id}: {str(e)}")
+        logger.exception(e)  # Log full traceback
         return False
-
+    
+    
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
@@ -265,6 +329,29 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 elif 'text' in message:
                     text_data = message['text']
                     try:
+                        
+                        data = json.loads(text_data)
+                        event = data.get('event')
+                        
+                        # Log all incoming Twilio events
+                        logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
+                        
+                        # Log full message for important events
+                        if event in ['connected', 'start', 'stop', 'mark']:
+                            logger.info(f"[TWILIO_DEBUG] Full message: {text_data}")
+                        
+                        # Handle mark responses specially (indicates audio playback status)
+                        if event == 'mark':
+                            mark_name = data.get('mark', {}).get('name', '')
+                            logger.info(f"[TWILIO_DEBUG] Received mark response: {mark_name}")
+                            
+                        # Additional event-specific logging
+                        if event == 'start':
+                            call_sid = data.get('start', {}).get('callSid')
+                            stream_sid = data.get('streamSid')
+                            logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}, callSid={call_sid}")
+                            
+                        
                         data = json.loads(text_data)
                         event = data.get('event')
                         if event == 'start':
