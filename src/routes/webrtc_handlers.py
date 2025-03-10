@@ -195,6 +195,7 @@ def initialize_app(app):
 #         except Exception as e:
 #             logger.error(f"Error during cleanup: {str(e)}")
 
+import logging
 import base64  # To log encoded audio for debugging
 
 
@@ -313,16 +314,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             websocket_closed = True
             return
         
-        
-        async def keep_twilio_alive():
-            while True:
-                if time.time() - last_activity_time > 10:
-                    logger.info(f"Sending Twilio keep-alive ping for {peer_id}")
-                    await websocket.send_text(json.dumps({"event": "ping"}))
-                await asyncio.sleep(5)
-
-        asyncio.create_task(keep_twilio_alive())
-        
         # Define callback function for handling transcribed speech
         async def handle_transcription(session_id, transcribed_text):
             nonlocal is_processing, last_processed_time
@@ -439,20 +430,17 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 ):
                     buffer += token
 
-                logger.info(f"Complete AI response for {client_id}: {buffer}")
+                logger.info(f"Complete AI response: {buffer}")
 
-                # Generate TTS audio
+                # ✅ Generate TTS audio
                 tts_audio = await tts_service.generate_audio(buffer)
 
-                # Log audio size
+                # ✅ Send audio via WebRTC
                 if tts_audio:
-                    logger.info(f"Generated TTS audio for {client_id}, size: {len(tts_audio)} bytes")
-
-                    # Send audio via WebRTC
                     await send_audio_to_webrtc(client_id, tts_audio)
 
             except Exception as e:
-                logger.error(f"Error in buffered message processing for {client_id}: {str(e)}")
+                logger.error(f"Error in buffered message processing: {str(e)}")
 
         
         # Main message processing loop
@@ -468,14 +456,11 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     disconnect_code = message.get('code', 'unknown')
                     disconnect_reason = message.get('reason', 'unknown')
                     logger.info(f"[{connection_id}] Received disconnect message: code={disconnect_code}, reason={disconnect_reason}")
-                    logger.info(f"Twilio WebRTC disconnected: {peer_id}")
                     websocket_closed = True
                     break
                 
                 if 'bytes' in message:
                     # Binary audio data
-                    last_activity_time = time.time()  # Reset inactivity timer
-                    logger.info(f"Received audio from Twilio client {peer_id}")
                     audio_data = message['bytes']
                     audio_chunks += 1
                     
