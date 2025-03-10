@@ -313,6 +313,16 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             websocket_closed = True
             return
         
+        
+        async def keep_twilio_alive():
+            while True:
+                if time.time() - last_activity_time > 10:
+                    logger.info(f"Sending Twilio keep-alive ping for {peer_id}")
+                    await websocket.send_text(json.dumps({"event": "ping"}))
+                await asyncio.sleep(5)
+
+        asyncio.create_task(keep_twilio_alive())
+        
         # Define callback function for handling transcribed speech
         async def handle_transcription(session_id, transcribed_text):
             nonlocal is_processing, last_processed_time
@@ -458,11 +468,14 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     disconnect_code = message.get('code', 'unknown')
                     disconnect_reason = message.get('reason', 'unknown')
                     logger.info(f"[{connection_id}] Received disconnect message: code={disconnect_code}, reason={disconnect_reason}")
+                    logger.info(f"Twilio WebRTC disconnected: {peer_id}")
                     websocket_closed = True
                     break
                 
                 if 'bytes' in message:
                     # Binary audio data
+                    last_activity_time = time.time()  # Reset inactivity timer
+                    logger.info(f"Received audio from Twilio client {peer_id}")
                     audio_data = message['bytes']
                     audio_chunks += 1
                     
