@@ -106,12 +106,11 @@ import base64
 import json
 import time
 
-app = WebSocket.app
-
-
 async def convert_to_twilio_format(input_audio_bytes: bytes):
     process = await asyncio.create_subprocess_exec(
-        'ffmpeg', '-y', '-f', 'mp3', '-i', 'pipe:0', '-ar', '8000', '-ac', '1', '-c:a', 'pcm_mulaw', '-f', 'wav', 'pipe:1',
+        'ffmpeg', '-y', '-f', 'mp3', '-i', 'pipe:0',
+        '-ar', '8000', '-ac', '1', '-c:a', 'pcm_mulaw',
+        '-f', 'wav', 'pipe:1',
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
@@ -123,7 +122,8 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
 
     return audio_output
 
-async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_manager, app: FastAPI):
+
+async def send_audio_to_webrtc(app, client_id: str, audio_data: bytes, connection_manager):
     try:
         ws = connection_manager.active_connections.get(client_id)
         if not ws or connection_manager.websocket_is_closed(ws):
@@ -305,20 +305,19 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         app = websocket.app
         connection_manager = app.state.connection_manager
         
-        async def process_buffered_message(manager, client_id, msg_data):
+        # Corrected buffered message processing function
+        async def process_buffered_message(manager, client_id, msg_data, app):
             """Process a message with buffer to avoid token-by-token transmission"""
             try:
-                # Get necessary resources
                 ws = manager.active_connections.get(client_id)
                 if not ws or manager.websocket_is_closed(ws):
-                    logger.warning(f"Client disconnected before processing")
+                    logger.warning(f"Client {client_id} disconnected before processing")
                     return
-                        
+
                 agent_res = manager.agent_resources.get(client_id)
                 chain = agent_res['chain']
                 rag_service = agent_res['rag_service']
-                
-                # Stream Answer Token-by-Token
+
                 buffer = ""
                 async for token in rag_service.get_answer_with_chain(
                     chain=chain,
@@ -326,38 +325,35 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     company_name="Callsure AI"
                 ):
                     buffer += token
-                    
-                    # Send token via WebRTC as before
                     if not manager.websocket_is_closed(ws):
                         await manager.send_json(ws, {
                             "type": "stream_chunk",
                             "text_content": token
                         })
-                
+
                 logger.info(f"Complete AI response: {buffer}")
-                
-                # Store the response in the application cache, accessible by app.state
-                # Use the FastAPI app instance directly
-                
-                # Store in app state cache
+
                 if not hasattr(app.state, "response_cache"):
                     app.state.response_cache = {}
-                    
+
                 app.state.response_cache[client_id] = {
                     "text": buffer,
                     "timestamp": time.time()
                 }
-                
-                # Generate TTS audio as before
-                tts_audio = await tts_service.generate_audio(buffer)
-                if tts_audio:
-                    await send_audio_to_webrtc(client_id, audio_data, connection_manager, app)
-                    
+
+                # Generate TTS audio clearly here:
+                audio_data = await tts_service.generate_audio(buffer)
+
+                # Call send_audio_to_webrtc with audio_data explicitly passed
+                if audio_data:
+                    await send_audio_to_webrtc(app, client_id, audio_data, manager)
+
                 return True
+
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
                 return False
-        
+
         # Main message processing loop
         while not websocket_closed:
             try:
