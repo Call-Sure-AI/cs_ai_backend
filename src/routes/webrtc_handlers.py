@@ -310,7 +310,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         event = data.get('event')
                         
                         # Log all incoming Twilio events
-                        logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
+                        # logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
                         
                         # Log full message for important events
                         if event in ['connected', 'start', 'stop', 'mark']:
