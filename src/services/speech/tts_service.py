@@ -87,6 +87,8 @@ class TextToSpeechService:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as response:
                     if response.status == 200:
+                        # In your TTS service logs
+                        logger.info(f"[TTS_DEBUG] ElevenLabs audio format: content-type={response.headers.get('content-type')}")
                         async for chunk in response.content.iter_chunked(self.chunk_size):
                             yield chunk
                             await asyncio.sleep(self.chunk_delay)

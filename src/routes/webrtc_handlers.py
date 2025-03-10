@@ -75,85 +75,61 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
     return audio_output
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
-    """Send audio to Twilio WebRTC with detailed logging and error handling"""
-    logger.info(f"[AUDIO_DEBUG] Sending audio to WebRTC, client: {client_id}, size: {len(audio_data)} bytes")
-    
     try:
-        # Check websocket connection
         ws = connection_manager.active_connections.get(client_id)
-        if not ws:
-            logger.error(f"[AUDIO_DEBUG] WebSocket missing for client {client_id}")
+        if not ws or connection_manager.websocket_is_closed(ws):
+            logger.warning(f"[AUDIO_DEBUG] WebSocket closed or missing for client {client_id}")
             return False
-            
-        if connection_manager.websocket_is_closed(ws):
-            logger.error(f"[AUDIO_DEBUG] WebSocket closed for client {client_id}")
-            return False
-            
-        logger.info(f"[AUDIO_DEBUG] WebSocket connection valid for {client_id}")
 
         # Convert audio
-        logger.info(f"[AUDIO_DEBUG] Starting audio conversion for {client_id}")
         converted_audio = await convert_to_twilio_format(audio_data)
-        
         if not converted_audio:
-            logger.error(f"[AUDIO_DEBUG] Audio conversion returned empty audio for {client_id}")
+            logger.error("[AUDIO_DEBUG] Audio conversion returned empty audio")
+            return False
+
+        # Get base64 encoded payload
+        payload = base64.b64encode(converted_audio).decode('utf-8')
+        
+        # Get CALL SID first
+        call_sid = app.state.client_call_mapping.get(client_id)
+        if not call_sid:
+            logger.error(f"[AUDIO_DEBUG] No call_sid mapping found for client {client_id}")
             return False
             
-        logger.info(f"[AUDIO_DEBUG] Audio conversion successful, size: {len(converted_audio)} bytes")
-
-        # Encode to base64
-        payload = base64.b64encode(converted_audio).decode('utf-8')
-        logger.info(f"[AUDIO_DEBUG] Base64 encoded payload size: {len(payload)} chars")
-
-        # Get stream_sid
-        stream_sid = app.state.client_call_mapping.get(client_id)
+        # Get STREAM SID from call SID
+        stream_sid = app.state.stream_call_mapping.get(call_sid)
         if not stream_sid:
-            logger.error(f"[AUDIO_DEBUG] No stream_sid mapping found for client {client_id}")
+            logger.error(f"[AUDIO_DEBUG] No stream_sid mapping found for call {call_sid}")
             return False
             
         logger.info(f"[AUDIO_DEBUG] Found stream_sid: {stream_sid} for client {client_id}")
 
-        # Create media message
+        # Create media message with CORRECT stream SID
         media_message = {
             "event": "media",
-            "streamSid": stream_sid,
+            "streamSid": stream_sid,  # Use the STREAM SID not CALL SID
             "media": {
                 "payload": payload
             }
         }
         
-        # Log message structure (without full payload)
-        debug_msg = media_message.copy()
-        if "payload" in debug_msg.get("media", {}):
-            payload_len = len(debug_msg["media"]["payload"])
-            debug_msg["media"]["payload"] = f"[{payload_len} chars]"
-        logger.info(f"[AUDIO_DEBUG] Sending media message: {json.dumps(debug_msg)}")
-        
         # Send the message
-        send_start = time.time()
         await ws.send_text(json.dumps(media_message))
-        send_time = time.time() - send_start
-        logger.info(f"[AUDIO_DEBUG] Media message sent in {send_time:.3f}s")
 
         # Send mark message for tracking
         mark_name = f"mark_{int(time.time())}"
         mark_message = {
             "event": "mark",
-            "streamSid": stream_sid,
+            "streamSid": stream_sid,  # Also use stream SID here
             "mark": {
                 "name": mark_name
             }
         }
-        
-        logger.info(f"[AUDIO_DEBUG] Sending mark message: {json.dumps(mark_message)}")
         await ws.send_text(json.dumps(mark_message))
-        logger.info(f"[AUDIO_DEBUG] Mark message sent successfully")
-        
         return True
 
     except Exception as e:
-        logger.error(f"[AUDIO_DEBUG] Error sending audio to WebRTC client {client_id}: {str(e)}")
-        logger.exception(e)  # Log full traceback
+        logger.error(f"Error sending audio to WebRTC client {client_id}: {e}")
         return False
     
     
@@ -343,14 +319,23 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         # Handle mark responses specially (indicates audio playback status)
                         if event == 'mark':
                             mark_name = data.get('mark', {}).get('name', '')
-                            logger.info(f"[TWILIO_DEBUG] Received mark response: {mark_name}")
+                            logger.info(f"[TWILIO_DEBUG] Received mark response: {mark_name} - Audio should be playing!")
+                            
                             
                         # Additional event-specific logging
                         if event == 'start':
-                            call_sid = data.get('start', {}).get('callSid')
                             stream_sid = data.get('streamSid')
-                            logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}, callSid={call_sid}")
+                            call_sid = data.get('start', {}).get('callSid')
                             
+                            # Store BOTH in your app state
+                            if not hasattr(app.state, 'stream_call_mapping'):
+                                app.state.stream_call_mapping = {}
+                            
+                            app.state.stream_call_mapping[call_sid] = stream_sid
+                            # Keep the existing mapping too
+                            app.state.client_call_mapping[client_id] = call_sid
+                            
+                            logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}, callSid={call_sid}")
                         
                         data = json.loads(text_data)
                         event = data.get('event')
