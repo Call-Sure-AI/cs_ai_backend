@@ -642,7 +642,7 @@ async def handle_gather(
         logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
 
         # Ensure manager is initialized
-        global manager
+        manager = request.app.state.connection_manager
         if manager is None:
             logger.error("Connection manager not initialized!")
             return Response(content="<Response><Say>System error occurred.</Say></Response>", media_type="application/xml")
