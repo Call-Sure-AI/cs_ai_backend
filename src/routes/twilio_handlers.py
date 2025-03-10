@@ -631,7 +631,6 @@ async def handle_incoming_call(request: Request):
             media_type="application/xml",
         )
 
-
 @router.post("/gather")
 async def handle_gather(
     request: Request,
@@ -640,7 +639,7 @@ async def handle_gather(
 ):
     """Handles speech recognition results from Twilio Gather verb."""
     try:
-        logger.info(f"Received speech from Twilio: {SpeechResult}")
+        logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
 
         # Ensure manager is initialized
         global manager
@@ -655,35 +654,23 @@ async def handle_gather(
 
         client_id = active_calls[CallSid]["peer_id"]
 
-        # Send recognized speech to WebRTC (WebRTC handles AI processing)
+        # Log message being sent to WebRTC
         message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
+        logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
+
+        # Send recognized speech to WebRTC (WebRTC handles AI processing)
         await manager.process_streaming_message(client_id, message_data)
 
-        return Response(content="<Response></Response>", media_type="application/xml")
+        response_xml = "<Response></Response>"
+        logger.info(f"Response sent to Twilio: {response_xml}")
+        return Response(content=response_xml, media_type="application/xml")
 
     except Exception as e:
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
-        return Response(content="<Response><Say>I'm sorry, we encountered a technical issue.</Say></Response>", media_type="application/xml")
+        response_xml = "<Response><Say>I'm sorry, we encountered a technical issue.</Say></Response>"
+        logger.info(f"Error Response sent to Twilio: {response_xml}")
+        return Response(content=response_xml, media_type="application/xml")
 
-
-@router.post("/call-status")
-async def handle_call_status(
-    CallStatus: str = Form(...),
-    CallSid: str = Form(...),
-    request: Request = None,
-):
-    """Handles call status updates from Twilio."""
-    logger.info(f"Call status update received - SID: {CallSid}, Status: {CallStatus}")
-
-    if CallSid in active_calls:
-        active_calls[CallSid]["status"] = CallStatus
-        logger.info(f"Updated call status for {CallSid} to {CallStatus}")
-
-        if CallStatus in ["completed", "failed", "busy", "no-answer"]:
-            active_calls.pop(CallSid, None)  # Remove completed calls from active tracking
-            logger.info(f"Call {CallSid} ended.")
-
-    return {"status": "success"}
 
 
 @router.on_event("startup")

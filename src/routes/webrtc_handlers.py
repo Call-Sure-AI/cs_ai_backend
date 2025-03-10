@@ -195,6 +195,8 @@ def initialize_app(app):
 #         except Exception as e:
 #             logger.error(f"Error during cleanup: {str(e)}")
 
+import base64  # To log encoded audio for debugging
+
 
 async def send_audio_to_webrtc(client_id: str, audio_data: bytes):
     """
@@ -210,9 +212,13 @@ async def send_audio_to_webrtc(client_id: str, audio_data: bytes):
             logger.warning(f"Client {client_id} disconnected before receiving audio.")
             return False
         
+        # Log audio size & first 100 bytes (Base64)
+        audio_encoded = base64.b64encode(audio_data[:100]).decode('utf-8')
+        logger.info(f"Sending {len(audio_data)} bytes of audio to WebRTC client {client_id}. First 100 bytes (Base64): {audio_encoded}")
+
         # Send the audio data as binary via WebRTC
         await ws.send_bytes(audio_data)
-        logger.info(f"Sent TTS-generated audio to WebRTC client {client_id}")
+        logger.info(f"Successfully sent TTS-generated audio to WebRTC client {client_id}")
         return True
     except Exception as e:
         logger.error(f"Error sending audio to WebRTC client {client_id}: {str(e)}")
