@@ -29,16 +29,6 @@ vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
 tts_service = TextToSpeechService()
 
-def initialize_app(app):
-    """Initialize app state"""
-    connection_manager = ConnectionManager(next(get_db()), vector_store)
-    app.state.connection_manager = connection_manager
-    app.state.webrtc_manager = webrtc_manager
-    
-    # Link the webrtc_manager to the connection_manager
-    webrtc_manager.connection_manager = connection_manager
-    
-    logger.info("Application initialized with connection and WebRTC managers")
 
 
 
@@ -175,6 +165,9 @@ async def send_audio_to_webrtc(app, client_id: str, audio_data: bytes, connectio
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within WebRTC signaling endpoint"""
+    app = websocket.app
+    connection_manager = app.state.connection_manager
+    
     connection_id = str(uuid.uuid4())[:8]
     message_count = 0
     audio_chunks = 0
@@ -261,9 +254,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             return
         
         async def handle_transcription(session_id, transcribed_text):
-            nonlocal is_processing, last_processed_time
+            nonlocal is_processing, last_processed_time, app  # ensure app is in scope
 
-            if not is_processing and transcribed_text and transcribed_text.strip():
+            if not is_processing and transcribed_text.strip():
                 is_processing = True
                 last_processed_time = time.time()
 
@@ -277,6 +270,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     process_message_with_retries(connection_manager, client_id, message_data, app)
                 )
 
+        
         async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
             nonlocal is_processing
             retries = 0
@@ -288,11 +282,12 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     success = True
                 except Exception as e:
                     retries += 1
-                    logger.error(f"[{connection_id}] Error processing message (retry {retries}): {str(e)}")
+                    logger.error(f"[{cid}] Error processing message (retry {retries}): {str(e)}")
                     await asyncio.sleep(0.5)
 
             is_processing = False
 
+        
         async def process_buffered_message(manager, client_id, msg_data, app):
             try:
                 ws = manager.active_connections.get(client_id)
@@ -333,8 +328,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
 
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
-                return False
-            
+  
             
         # Main message processing loop
         while not websocket_closed:
