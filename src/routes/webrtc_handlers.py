@@ -260,58 +260,44 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             websocket_closed = True
             return
         
-        # Define callback function for handling transcribed speech
         async def handle_transcription(session_id, transcribed_text):
             nonlocal is_processing, last_processed_time
-            
-            logger.info(f"[{connection_id}] Transcription received: '{transcribed_text}'")
-            
-            # Only process if not already processing and meaningful text received
+
             if not is_processing and transcribed_text and transcribed_text.strip():
                 is_processing = True
                 last_processed_time = time.time()
-                
-                # Process using connection manager
+
                 message_data = {
                     "type": "message",
                     "message": transcribed_text,
                     "source": "twilio"
                 }
-                
-                # Use a separate task to avoid blocking the main loop
+
                 asyncio.create_task(
-                    process_message_with_retries(connection_manager, client_id, message_data)
+                    process_message_with_retries(connection_manager, client_id, message_data, app)
                 )
-        
-        # Helper function to process messages with retries
-        async def process_message_with_retries(manager, cid, msg_data, max_retries=3):
+
+        async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
             nonlocal is_processing
             retries = 0
             success = False
-            
+
             while retries < max_retries and not success:
                 try:
-                    # Use buffered message processing to prevent token-by-token responses
-                    # that might overwhelm the connection
-                    await process_buffered_message(manager, cid, msg_data)
+                    await process_buffered_message(manager, cid, msg_data, app)
                     success = True
                 except Exception as e:
                     retries += 1
                     logger.error(f"[{connection_id}] Error processing message (retry {retries}): {str(e)}")
-                    await asyncio.sleep(0.5)  # Small delay before retry
-            
+                    await asyncio.sleep(0.5)
+
             is_processing = False
-        
-        app = websocket.app
-        connection_manager = app.state.connection_manager
-        
-        # Corrected buffered message processing function
+
         async def process_buffered_message(manager, client_id, msg_data, app):
-            """Process a message with buffer to avoid token-by-token transmission"""
             try:
                 ws = manager.active_connections.get(client_id)
                 if not ws or manager.websocket_is_closed(ws):
-                    logger.warning(f"Client {client_id} disconnected before processing")
+                    logger.warning(f"Client disconnected before processing")
                     return
 
                 agent_res = manager.agent_resources.get(client_id)
@@ -341,19 +327,15 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     "timestamp": time.time()
                 }
 
-                # Generate TTS audio clearly here:
                 audio_data = await tts_service.generate_audio(buffer)
-
-                # Call send_audio_to_webrtc with audio_data explicitly passed
                 if audio_data:
                     await send_audio_to_webrtc(app, client_id, audio_data, manager)
-
-                return True
 
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
                 return False
-
+            
+            
         # Main message processing loop
         while not websocket_closed:
             try:
