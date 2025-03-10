@@ -50,6 +50,10 @@ async def handle_incoming_call(request: Request):
         peer_id = f"twilio_{str(uuid.uuid4())}"
         logger.info(f"Generated peer_id: {peer_id}")
 
+        global active_calls
+        if not 'active_calls' in globals():
+            active_calls = {}
+
         # Store call information
         active_calls[call_sid] = {
             "peer_id": peer_id,
@@ -58,6 +62,12 @@ async def handle_incoming_call(request: Request):
             "status": "initiated",
             "last_activity": time.time(),
         }
+        
+        if not hasattr(request.app.state, 'client_call_mapping'):
+            request.app.state.client_call_mapping = {}
+            
+        # Store mapping both ways for easy lookup
+        request.app.state.client_call_mapping[peer_id] = call_sid
 
         # Get WebRTC signaling URL
         host = request.headers.get("host") or request.base_url.hostname
@@ -100,36 +110,91 @@ async def handle_gather(
     try:
         logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
 
-        # Ensure manager is initialized
+        # Get connection manager from app state
         manager = request.app.state.connection_manager
-        if manager is None:
-            logger.error("Connection manager not initialized!")
-            return Response(content="<Response><Say>System error occurred.</Say></Response>", media_type="application/xml")
+        if not manager:
+            logger.error("Connection manager not available in app state!")
+            return Response(
+                content=VoiceResponse().say("System error occurred.").to_xml(),
+                media_type="application/xml"
+            )
 
         # Retrieve WebRTC peer ID
+        global active_calls
+        if not 'active_calls' in globals():
+            active_calls = {}
+            
         if CallSid not in active_calls:
-            logger.warning(f"CallSid {CallSid} not found.")
-            return Response(content="<Response><Say>Call session not found.</Say></Response>", media_type="application/xml")
+            logger.warning(f"CallSid {CallSid} not found in active_calls.")
+            
+            # Try to find in app state as fallback
+            if hasattr(request.app.state, 'client_call_mapping'):
+                # Find the client_id by reversing the mapping
+                client_id = None
+                for cid, sid in request.app.state.client_call_mapping.items():
+                    if sid == CallSid:
+                        client_id = cid
+                        break
+                        
+                if not client_id:
+                    return Response(
+                        content=VoiceResponse().say("Call session not found.").to_xml(),
+                        media_type="application/xml"
+                    )
+            else:
+                return Response(
+                    content=VoiceResponse().say("Call session not found.").to_xml(),
+                    media_type="application/xml"
+                )
+        else:
+            client_id = active_calls[CallSid]["peer_id"]
+        
+        # Initialize response
+        resp = VoiceResponse()
+        
+        # First, check if we have a cached response for this client
+        response_text = None
+        if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
+            response_text = request.app.state.response_cache[client_id]["text"]
+            logger.info(f"Found cached response for {client_id}: {response_text[:50]}...")
+            
+            # Remove from cache after using to avoid repetition
+            del request.app.state.response_cache[client_id]
+            
+        # If we have a response, say it to the caller
+        if response_text:
+            resp.say(response_text, voice="Polly.Matthew")
+        else:
+            # Process the new input if we didn't find a stored response
+            if SpeechResult:
+                # Send for async processing (response won't be available for this return)
+                message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
+                logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
 
-        client_id = active_calls[CallSid]["peer_id"]
-
-        # Log message being sent to WebRTC
-        message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
-        logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
-
-        # Send recognized speech to WebRTC (WebRTC handles AI processing)
-        await manager.process_streaming_message(client_id, message_data)
-
-        response_xml = "<Response></Response>"
+                # Try to process via WebRTC
+                if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
+                    # Use create_task so we don't block this response
+                    asyncio.create_task(manager.process_streaming_message(client_id, message_data))
+                    resp.say("I'm processing your request...", voice="Polly.Matthew")
+                else:
+                    # Client disconnected, handle gracefully
+                    resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
+            else:
+                resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
+        
+        # Continue gathering speech input
+        resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
+        
+        # Log and return the response
+        response_xml = resp.to_xml()
         logger.info(f"Response sent to Twilio: {response_xml}")
         return Response(content=response_xml, media_type="application/xml")
 
     except Exception as e:
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
-        response_xml = "<Response><Say>I'm sorry, we encountered a technical issue.</Say></Response>"
-        logger.info(f"Error Response sent to Twilio: {response_xml}")
-        return Response(content=response_xml, media_type="application/xml")
-
+        resp = VoiceResponse()
+        resp.say("I'm sorry, we encountered a technical issue.", voice="Polly.Matthew")
+        return Response(content=resp.to_xml(), media_type="application/xml")
 
 
 @router.on_event("startup")

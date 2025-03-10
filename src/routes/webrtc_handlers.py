@@ -202,39 +202,60 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             is_processing = False
         
         
+        
         async def process_buffered_message(manager, client_id, msg_data):
-            """
-            Converts AI-generated text into speech and sends via WebRTC.
-            """
+            """Process a message with buffer to avoid token-by-token transmission"""
             try:
+                # Get necessary resources
                 ws = manager.active_connections.get(client_id)
                 if not ws or manager.websocket_is_closed(ws):
-                    logger.warning(f"Client {client_id} disconnected before processing response.")
+                    logger.warning(f"Client disconnected before processing")
                     return
-
+                        
                 agent_res = manager.agent_resources.get(client_id)
-                chain = agent_res["chain"]
-                rag_service = agent_res["rag_service"]
-
+                chain = agent_res['chain']
+                rag_service = agent_res['rag_service']
+                
+                # Stream Answer Token-by-Token
                 buffer = ""
                 async for token in rag_service.get_answer_with_chain(
-                    chain=chain, question=msg_data.get("message", ""), company_name="Callsure AI"
+                    chain=chain,
+                    question=msg_data.get('message', ''),
+                    company_name="Callsure AI"
                 ):
                     buffer += token
-
+                    
+                    # Send token via WebRTC as before
+                    if not manager.websocket_is_closed(ws):
+                        await manager.send_json(ws, {
+                            "type": "stream_chunk",
+                            "text_content": token
+                        })
                 
                 logger.info(f"Complete AI response: {buffer}")
-
-                # ✅ Generate TTS audio
+                
+                # Store the response in the application cache, accessible by app.state
+                # Use the FastAPI app instance directly
+                from app import app  # Import your FastAPI app instance
+                
+                # Store in app state cache
+                if not hasattr(app.state, "response_cache"):
+                    app.state.response_cache = {}
+                    
+                app.state.response_cache[client_id] = {
+                    "text": buffer,
+                    "timestamp": time.time()
+                }
+                
+                # Generate TTS audio as before
                 tts_audio = await tts_service.generate_audio(buffer)
-
-                # ✅ Send audio via WebRTC
                 if tts_audio:
                     await send_audio_to_webrtc(client_id, tts_audio)
-
+                    
+                return True
             except Exception as e:
                 logger.error(f"Error in buffered message processing: {str(e)}")
-
+                return False
         
         # Main message processing loop
         while not websocket_closed:

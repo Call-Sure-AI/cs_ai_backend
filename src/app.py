@@ -72,5 +72,8 @@ async def startup_event():
     webrtc_manager = WebRTCManager()
     webrtc_manager.connection_manager = connection_manager
     app.state.webrtc_manager = webrtc_manager
+    app.state.response_cache = {}
+    app.state.call_mappings = {}
+    logger.info("Initialized shared application state")
     
     logger.info("Application initialized with connection and WebRTC managers")
