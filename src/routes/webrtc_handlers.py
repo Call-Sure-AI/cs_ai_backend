@@ -222,10 +222,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 ):
                     buffer += token
 
-                app.state.response_cache[client_id] = {
-                    "text": buffer,
-                    "timestamp": time.time()
-                }
                 
                 logger.info(f"Complete AI response: {buffer}")
 
