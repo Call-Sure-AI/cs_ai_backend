@@ -32,8 +32,15 @@ tts_service = TextToSpeechService()
 import asyncio
 import subprocess
 import base64
+import json
+import time
+import uuid
+from fastapi import FastAPI
+from datetime import datetime
+import logging
 
-
+# (Assume your other imports remain unchanged.)
+logger = logging.getLogger(__name__)
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
     process = await asyncio.create_subprocess_exec(
@@ -56,16 +63,12 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             logger.warning(f"WebSocket closed or missing for client {client_id}")
             return False
 
-        # Convert the audio into Twilio's required format.
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error("Audio conversion returned empty audio")
             return False
 
-        # Base64 encode the converted audio.
         payload = base64.b64encode(converted_audio).decode('utf-8')
-
-        # Retrieve the stream SID from app state.
         stream_sid = app.state.client_call_mapping.get(client_id)
         if not stream_sid:
             logger.error(f"No stream_sid mapping found for client {client_id}")
@@ -84,7 +87,6 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             "mark": {"name": f"mark_{int(time.time())}"}
         }
         await ws.send_text(json.dumps(mark_message))
-
         return True
 
     except Exception as e:
@@ -98,13 +100,11 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.warning("Client disconnected before processing")
             return
 
-        # Retrieve agent resources; if missing, log an error and exit.
         agent_res = manager.agent_resources.get(client_id)
         if agent_res is None:
             logger.error(f"Agent resources not found for client {client_id}")
-            return
+            return  # Early exit if agent resources are missing
 
-        # Extract the chain and rag_service safely.
         chain = agent_res.get('chain')
         rag_service = agent_res.get('rag_service')
         if chain is None or rag_service is None:
@@ -119,30 +119,23 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         ):
             buffer_text += token
             if not manager.websocket_is_closed(ws):
-                await manager.send_json(ws, {
-                    "type": "stream_chunk",
-                    "text_content": token
-                })
+                await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
         logger.info(f"Complete AI response: {buffer_text}")
 
         if not hasattr(app.state, "response_cache"):
             app.state.response_cache = {}
-
         app.state.response_cache[client_id] = {"text": buffer_text, "timestamp": time.time()}
 
-        # Generate TTS audio from the buffer text.
         audio_data = await tts_service.generate_audio(buffer_text)
         if audio_data:
             await send_audio_to_webrtc(app, client_id, audio_data, manager)
 
     except Exception as e:
         logger.error(f"Error in buffered message processing: {str(e)}")
-        # Propagate the exception so that retries can occur.
-        raise
+        raise  # Propagate exception for retries
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
-    nonlocal_is_processing = False  # Use a local flag if needed
     retries = 0
     success = False
     while retries < max_retries and not success:
@@ -153,13 +146,11 @@ async def process_message_with_retries(manager, cid, msg_data, app, max_retries=
             retries += 1
             logger.error(f"[{cid}] Error processing message (retry {retries}): {str(e)}")
             await asyncio.sleep(0.5)
-    # Reset processing flag after retries.
-    # (In your code, you already use a nonlocal is_processing flag.)
     return
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within the WebRTC signaling endpoint."""
-    app = websocket.app  # Get FastAPI app instance from websocket
+    app = websocket.app  # Get FastAPI app instance
     connection_manager = app.state.connection_manager
     client_id = peer_id
     connection_id = str(uuid.uuid4())[:8]
@@ -180,14 +171,14 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
 
-        # (Assume company and agent initialization have already been done before calling this handler)
+        # (Assume company and agent initialization occur before this handler is called.)
 
-        # Connect the client
+        # Connect client
         await connection_manager.connect(websocket, client_id)
         logger.info(f"[{connection_id}] Client {client_id} connected to manager")
         connected = True
 
-        # Define the transcription handler
+        # Define transcription handler (capture app via nonlocal)
         async def handle_transcription(session_id, transcribed_text):
             nonlocal is_processing, last_processed_time, app
             if not is_processing and transcribed_text.strip():
@@ -255,9 +246,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             break
                     except json.JSONDecodeError:
                         logger.warning(f"[{connection_id}] Non-JSON text received")
-                # (Heartbeat and silence checks can be added here)
+                # (Heartbeat and silence checks omitted for brevity.)
             except asyncio.TimeoutError:
-                # (Heartbeat logic)
+                # (Heartbeat logic, if any, goes here.)
                 pass
             except Exception as e:
                 logger.error(f"[{connection_id}] Error processing message: {str(e)}")
@@ -268,11 +259,11 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         logger.error(f"[{connection_id}] Error in Twilio Media Stream handler: {str(e)}", exc_info=True)
     finally:
         stt_service.close_session(client_id)
-        if client_id and webrtc_manager.connection_manager:
+        if client_id and connection_manager:
             logger.info(f"[{connection_id}] Disconnecting client {client_id}")
             try:
-                await webrtc_manager.connection_manager.cleanup_agent_resources(client_id)
-                webrtc_manager.connection_manager.disconnect(client_id)
+                await connection_manager.cleanup_agent_resources(client_id)
+                connection_manager.disconnect(client_id)
             except Exception as e:
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
