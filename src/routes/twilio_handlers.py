@@ -128,70 +128,65 @@ async def handle_gather(
             )
 
         # Retrieve WebRTC peer ID
-        global active_calls
-        if not 'active_calls' in globals():
-            active_calls = {}
-            
-        if CallSid not in active_calls:
-            logger.warning(f"CallSid {CallSid} not found in active_calls.")
-            
-            # Try to find in app state as fallback
-            if hasattr(request.app.state, 'client_call_mapping'):
-                # Find the client_id by reversing the mapping
-                client_id = None
-                for cid, sid in request.app.state.client_call_mapping.items():
-                    if sid == CallSid:
-                        client_id = cid
-                        break
-                        
-                if not client_id:
-                    return Response(
-                        content=VoiceResponse().say("Call session not found.").to_xml(),
-                        media_type="application/xml"
-                    )
-            else:
-                return Response(
-                    content=VoiceResponse().say("Call session not found.").to_xml(),
-                    media_type="application/xml"
-                )
-        else:
-            client_id = active_calls[CallSid]["peer_id"]
+        client_id = None
+        if hasattr(request.app.state, 'client_call_mapping'):
+            # Find the client_id by reversing the mapping
+            for cid, sid in request.app.state.client_call_mapping.items():
+                if sid == CallSid:
+                    client_id = cid
+                    break
+        
+        if not client_id:
+            logger.warning(f"No client ID found for CallSid: {CallSid}")
+            return Response(
+                content=VoiceResponse().say("Call session not found.").to_xml(),
+                media_type="application/xml"
+            )
         
         # Initialize response
         resp = VoiceResponse()
         
-        # First, check if we have a cached response for this client
-        response_text = None
+        # Default response if no specific handling occurs
+        default_response = "I'm sorry, I couldn't process your request."
+        
+        # Check for cached response first
         if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
-            response_text = request.app.state.response_cache[client_id]["text"]
-            logger.info(f"Found cached response for {client_id}: {response_text[:50]}...")
+            cached_response = request.app.state.response_cache[client_id]
+            response_text = cached_response.get("text", default_response)
+            response_time = cached_response.get("timestamp", 0)
             
-            # Remove from cache after using to avoid repetition
-            del request.app.state.response_cache[client_id]
-            
-        # If we have a response, say it to the caller
-        if response_text:
-            resp.say(response_text, voice="Polly.Matthew")
-        else:
-            # Process the new input if we didn't find a stored response
-            if SpeechResult:
-                # Send for async processing (response won't be available for this return)
-                message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
-                logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
-
-                # Try to process via WebRTC
-                if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
-                    # Use create_task so we don't block this response
-                    asyncio.create_task(manager.process_streaming_message(client_id, message_data))
-                    resp.say("I'm processing your request...", voice="Polly.Matthew")
-                else:
-                    # Client disconnected, handle gracefully
-                    resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
+            # Check if cache is not too old (e.g., within 5 minutes)
+            if time.time() - response_time < 300:
+                logger.info(f"Using cached response for {client_id}: {response_text[:50]}...")
+                resp.say(response_text, voice="Polly.Matthew")
+                
+                # Remove from cache
+                del request.app.state.response_cache[client_id]
             else:
-                resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
+                logger.warning("Cached response too old, ignoring.")
+        
+        # If no cached response, process new input
+        if SpeechResult and len(resp.verbs) == 0:
+            message_data = {
+                "type": "message", 
+                "message": SpeechResult, 
+                "source": "twilio"
+            }
+            logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
+
+            # Try to process via WebRTC
+            if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
+                asyncio.create_task(manager.process_streaming_message(client_id, message_data))
+                resp.say("I'm processing your request...", voice="Polly.Matthew")
+            else:
+                resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
+        
+        # If no verbs added yet, use a default prompt
+        if len(resp.verbs) == 0:
+            resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
         
         # Continue gathering speech input
-        resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
+        resp.gather(input="speech", timeout="20", action="/api/v1/twilio/gather")
         
         # Log and return the response
         response_xml = resp.to_xml()
@@ -203,7 +198,7 @@ async def handle_gather(
         resp = VoiceResponse()
         resp.say("I'm sorry, we encountered a technical issue.", voice="Polly.Matthew")
         return Response(content=resp.to_xml(), media_type="application/xml")
-
+    
 
 @router.on_event("startup")
 async def startup_event():

@@ -43,33 +43,36 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
     """Convert audio to Twilio-compatible raw μ-law format without headers"""
     logger.info(f"Starting audio conversion, input size: {len(input_audio_bytes)} bytes")
     
-    # Use ffmpeg to convert directly to raw μ-law without WAV headers
-    process = await asyncio.create_subprocess_exec(
-        'ffmpeg', '-y', 
-        '-f', 'mp3', '-i', 'pipe:0',
-        '-ar', '8000', '-ac', '1', 
-        '-c:a', 'pcm_mulaw', 
-        '-f', 'mulaw',  # This is critical - use mulaw format not WAV
-        'pipe:1',
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    try:
+        # Use ffmpeg for robust audio conversion
+        process = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-y', 
+            '-f', 'mp3', '-i', 'pipe:0',
+            '-ar', '8000',     # Force 8kHz sample rate
+            '-ac', '1',         # Mono channel
+            '-acodec', 'pcm_mulaw', # μ-law encoding
+            '-f', 'mulaw',      # μ-law format
+            'pipe:1',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Pass input audio through ffmpeg
+        audio_output, error = await process.communicate(input=input_audio_bytes)
+        
+        if process.returncode != 0:
+            error_msg = error.decode()
+            logger.error(f"Audio conversion failed: {error_msg}")
+            return None
+        
+        logger.info(f"Audio conversion successful, output size: {len(audio_output)} bytes")
+        return audio_output
     
-    audio_output, error = await process.communicate(input=input_audio_bytes)
-    
-    if process.returncode != 0:
-        error_msg = error.decode()
-        logger.error(f"Audio conversion failed: {error_msg}")
+    except Exception as e:
+        logger.error(f"Unexpected error in audio conversion: {str(e)}")
         return None
-    
-    logger.info(f"Audio conversion successful, output size: {len(audio_output)} bytes")
-    
-    # No need to remove headers if we use -f mulaw
-    return audio_output
 
-
-# Modify the send_audio_to_webrtc function like this:
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
     try:
         ws = connection_manager.active_connections.get(client_id)
@@ -77,64 +80,50 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             logger.warning(f"WebSocket closed or missing for client {client_id}")
             return False
 
-        # Convert audio to correct format
+        # Convert audio to Twilio-compatible format
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error("Audio conversion returned empty audio")
             return False
 
-        # Get base64 encoded payload
+        # Encode payload as base64
         payload = base64.b64encode(converted_audio).decode('utf-8')
         
-        # Get the stream SID directly from the start event we stored earlier
-        # This is stored in app.state.stream_sids if you implemented the 
-        # storage during the 'start' event handling
-        stream_sid = None
-        if hasattr(app.state, 'stream_sids') and client_id in app.state.stream_sids:
-            stream_sid = app.state.stream_sids[client_id]
-        
+        # Retrieve stream SID
+        stream_sid = getattr(app.state, 'stream_sids', {}).get(client_id)
         if not stream_sid:
             logger.error(f"No stream_sid found for client {client_id}")
             return False
             
-        logger.info(f"[AUDIO_DEBUG] Found stream_sid: {stream_sid} for client {client_id}")
-
-        # Format EXACTLY as Twilio expects
+        # Prepare media message in Twilio's expected format
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
             "media": {
-                "payload": payload
+                "payload": payload,
+                "track": "outbound"  # Explicitly set as outbound audio
             }
         }
         
-        # Log what we're sending
-        debug_msg = media_message.copy()
-        debug_msg["media"]["payload"] = f"[{len(payload)} chars]"
-        logger.info(f"[AUDIO_DEBUG] Sending media message: {json.dumps(debug_msg)}")
-        
-        # Send the media message
+        # Send media message
         await ws.send_text(json.dumps(media_message))
         
-        # Send a mark message immediately after
-        mark_name = f"mark_{int(time.time())}"
+        # Send mark message for audio tracking
         mark_message = {
             "event": "mark",
             "streamSid": stream_sid,
             "mark": {
-                "name": mark_name
+                "name": f"mark_{int(time.time())}"
             }
         }
-        
-        logger.info(f"[AUDIO_DEBUG] Sending mark message: {json.dumps(mark_message)}")
         await ws.send_text(json.dumps(mark_message))
         
+        logger.info(f"Successfully sent audio to WebRTC for client {client_id}")
         return True
 
     except Exception as e:
         logger.error(f"Error sending audio to WebRTC client {client_id}: {e}")
         return False
-    
     
     
 async def process_buffered_message(manager, client_id, msg_data, app):
