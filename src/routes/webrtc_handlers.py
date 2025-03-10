@@ -40,16 +40,17 @@ from datetime import datetime
 import logging
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
-    """Convert audio to Twilio compatible format with detailed logging"""
+    """Convert audio to Twilio-compatible raw μ-law format without headers"""
     logger.info(f"Starting audio conversion, input size: {len(input_audio_bytes)} bytes")
     
-    # Log first few bytes of input for debugging
-    logger.debug(f"Input audio header (first 20 bytes): {input_audio_bytes[:20].hex()}")
-    
+    # Use ffmpeg to convert directly to raw μ-law without WAV headers
     process = await asyncio.create_subprocess_exec(
-        'ffmpeg', '-y', '-f', 'mp3', '-i', 'pipe:0',
-        '-ar', '8000', '-ac', '1', '-c:a', 'pcm_mulaw',
-        '-f', 'wav', 'pipe:1',
+        'ffmpeg', '-y', 
+        '-f', 'mp3', '-i', 'pipe:0',
+        '-ar', '8000', '-ac', '1', 
+        '-c:a', 'pcm_mulaw', 
+        '-f', 'mulaw',  # This is critical - use mulaw format not WAV
+        'pipe:1',
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
@@ -59,20 +60,14 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
     
     if process.returncode != 0:
         error_msg = error.decode()
-        logger.error(f"Audio conversion failed with code {process.returncode}: {error_msg}")
+        logger.error(f"Audio conversion failed: {error_msg}")
         return None
     
-    # Log conversion success and output details
     logger.info(f"Audio conversion successful, output size: {len(audio_output)} bytes")
-    logger.debug(f"Output audio header (first 20 bytes): {audio_output[:20].hex()}")
     
-    # Check if output has WAV header and remove it if necessary
-    if len(audio_output) > 44 and audio_output.startswith(b'RIFF'):
-        logger.info("Removing WAV header (44 bytes) from converted audio")
-        audio_output = audio_output[44:]
-        logger.info(f"Audio size after header removal: {len(audio_output)} bytes")
-    
+    # No need to remove headers if we use -f mulaw
     return audio_output
+
 
 # Modify the send_audio_to_webrtc function like this:
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
