@@ -357,7 +357,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 # Generate TTS audio as before
                 tts_audio = await tts_service.generate_audio(buffer)
                 if tts_audio:
-                    await send_audio_to_webrtc(client_id, tts_audio)
+                    await send_audio_to_webrtc(client_id, tts_audio, manager)
                     
                 return True
             except Exception as e:
