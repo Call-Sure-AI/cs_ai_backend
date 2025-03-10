@@ -100,142 +100,100 @@ async def handle_incoming_call(request: Request):
             media_type="application/xml",
         )
 
-# @router.post("/gather")
-# async def handle_gather(
-#     request: Request,
-#     SpeechResult: Optional[str] = Form(None),
-#     CallSid: str = Form(...),
-# ):
-#     """Handles speech recognition results from Twilio Gather verb."""
-#     try:
-#         logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
-
-#         # Get connection manager from app state
-#         manager = request.app.state.connection_manager
-#         if not manager:
-#             logger.error("Connection manager not available in app state!")
-#             return Response(
-#                 content=VoiceResponse().say("System error occurred.").to_xml(),
-#                 media_type="application/xml"
-#             )
-
-#         # Retrieve WebRTC peer ID
-#         global active_calls
-#         if not 'active_calls' in globals():
-#             active_calls = {}
-            
-#         if CallSid not in active_calls:
-#             logger.warning(f"CallSid {CallSid} not found in active_calls.")
-            
-#             # Try to find in app state as fallback
-#             if hasattr(request.app.state, 'client_call_mapping'):
-#                 # Find the client_id by reversing the mapping
-#                 client_id = None
-#                 for cid, sid in request.app.state.client_call_mapping.items():
-#                     if sid == CallSid:
-#                         client_id = cid
-#                         break
-                        
-#                 if not client_id:
-#                     return Response(
-#                         content=VoiceResponse().say("Call session not found.").to_xml(),
-#                         media_type="application/xml"
-#                     )
-#             else:
-#                 return Response(
-#                     content=VoiceResponse().say("Call session not found.").to_xml(),
-#                     media_type="application/xml"
-#                 )
-#         else:
-#             client_id = active_calls[CallSid]["peer_id"]
-        
-#         # Initialize response
-#         resp = VoiceResponse()
-        
-#         # First, check if we have a cached response for this client
-#         response_text = None
-#         if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
-#             response_text = request.app.state.response_cache[client_id]["text"]
-#             logger.info(f"Found cached response for {client_id}: {response_text[:50]}...")
-            
-#             # Remove from cache after using to avoid repetition
-#             del request.app.state.response_cache[client_id]
-            
-#         # If we have a response, say it to the caller
-#         if response_text:
-#             resp.say(response_text, voice="Polly.Matthew")
-#         else:
-#             # Process the new input if we didn't find a stored response
-#             if SpeechResult:
-#                 # Send for async processing (response won't be available for this return)
-#                 message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
-#                 logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
-
-#                 # Try to process via WebRTC
-#                 if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
-#                     # Use create_task so we don't block this response
-#                     asyncio.create_task(manager.process_streaming_message(client_id, message_data))
-#                     resp.say("I'm processing your request...", voice="Polly.Matthew")
-#                 else:
-#                     # Client disconnected, handle gracefully
-#                     resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
-#             else:
-#                 resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
-        
-#         # Continue gathering speech input
-#         resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
-        
-#         # Log and return the response
-#         response_xml = resp.to_xml()
-#         logger.info(f"Response sent to Twilio: {response_xml}")
-#         return Response(content=response_xml, media_type="application/xml")
-
-#     except Exception as e:
-#         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
-#         resp = VoiceResponse()
-#         resp.say("I'm sorry, we encountered a technical issue.", voice="Polly.Matthew")
-#         return Response(content=resp.to_xml(), media_type="application/xml")
-
 @router.post("/gather")
 async def handle_gather(
     request: Request,
     SpeechResult: Optional[str] = Form(None),
     CallSid: str = Form(...),
 ):
+    """Handles speech recognition results from Twilio Gather verb."""
     try:
         logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
 
-        # Find the client_id for this call
-        client_id = active_calls[CallSid]["peer_id"]
+        # Get connection manager from app state
+        manager = request.app.state.connection_manager
+        if not manager:
+            logger.error("Connection manager not available in app state!")
+            return Response(
+                content=VoiceResponse().say("System error occurred.").to_xml(),
+                media_type="application/xml"
+            )
+
+        # Retrieve WebRTC peer ID
+        global active_calls
+        if not 'active_calls' in globals():
+            active_calls = {}
+            
+        if CallSid not in active_calls:
+            logger.warning(f"CallSid {CallSid} not found in active_calls.")
+            
+            # Try to find in app state as fallback
+            if hasattr(request.app.state, 'client_call_mapping'):
+                # Find the client_id by reversing the mapping
+                client_id = None
+                for cid, sid in request.app.state.client_call_mapping.items():
+                    if sid == CallSid:
+                        client_id = cid
+                        break
+                        
+                if not client_id:
+                    return Response(
+                        content=VoiceResponse().say("Call session not found.").to_xml(),
+                        media_type="application/xml"
+                    )
+            else:
+                return Response(
+                    content=VoiceResponse().say("Call session not found.").to_xml(),
+                    media_type="application/xml"
+                )
+        else:
+            client_id = active_calls[CallSid]["peer_id"]
         
-        # Create minimal TwiML response that keeps the call and stream active
+        # Initialize response
         resp = VoiceResponse()
         
-        # Process the message using the existing WebRTC stream
-        if SpeechResult:
-            # Forward the message to WebRTC system
-            manager = request.app.state.connection_manager
-            message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
+        # First, check if we have a cached response for this client
+        response_text = None
+        if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
+            response_text = request.app.state.response_cache[client_id]["text"]
+            logger.info(f"Found cached response for {client_id}: {response_text[:50]}...")
             
-            # Create a task to process the message (don't await it)
-            asyncio.create_task(manager.process_streaming_message(client_id, message_data))
+            # Remove from cache after using to avoid repetition
+            del request.app.state.response_cache[client_id]
             
-            # Keep the stream connection open - don't say anything
-            # Just wait silently for the WebRTC audio to be delivered
-            resp.pause(length=1)
+        # If we have a response, say it to the caller
+        if response_text:
+            resp.say(response_text, voice="Polly.Matthew")
+        else:
+            # Process the new input if we didn't find a stored response
+            if SpeechResult:
+                # Send for async processing (response won't be available for this return)
+                message_data = {"type": "message", "message": SpeechResult, "source": "twilio"}
+                logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
+
+                # Try to process via WebRTC
+                if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
+                    # Use create_task so we don't block this response
+                    asyncio.create_task(manager.process_streaming_message(client_id, message_data))
+                    resp.say("I'm processing your request...", voice="Polly.Matthew")
+                else:
+                    # Client disconnected, handle gracefully
+                    resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
+            else:
+                resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
         
         # Continue gathering speech input
         resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
         
+        # Log and return the response
         response_xml = resp.to_xml()
         logger.info(f"Response sent to Twilio: {response_xml}")
         return Response(content=response_xml, media_type="application/xml")
-            
+
     except Exception as e:
         logger.error(f"Error in gather handler: {str(e)}", exc_info=True)
         resp = VoiceResponse()
         resp.say("I'm sorry, we encountered a technical issue.", voice="Polly.Matthew")
-        resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
         return Response(content=resp.to_xml(), media_type="application/xml")
 
 
