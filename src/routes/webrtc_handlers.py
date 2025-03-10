@@ -102,30 +102,19 @@ import json
 import subprocess
 
 
-async def convert_audio_to_mulaw(audio_bytes: bytes) -> bytes:
-    """Convert audio bytes to mulaw format for Twilio."""
-    try:
-        process = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-i", "pipe:0",
-                "-ar", "8000",
-                "-ac", "1",
-                "-f", "mulaw",
-                "pipe:1"
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        converted_audio, error = process.communicate(input=audio_bytes)
-        if process.returncode != 0:
-            logger.error(f"FFmpeg conversion error: {error.decode()}")
-            return None
-        return converted_audio
-    except Exception as e:
-        logger.error(f"Audio conversion error: {str(e)}")
-        return None
+def convert_to_twilio_format(input_audio_bytes):
+    process = subprocess.Popen(
+        ['ffmpeg', '-y', '-f', 'mp3', '-i', 'pipe:0', '-ar', '8000', '-ac', '1', '-c:a', 'pcm_mulaw', '-f', 'wav', '-'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    audio_output, error = process.communicate(input=input_audio_bytes)
+
+    if process.returncode != 0:
+        raise Exception(f"Audio conversion failed: {error.decode()}")
+
+    return audio_output 
 
 async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_manager):
     try:
@@ -135,7 +124,7 @@ async def send_audio_to_webrtc(client_id: str, audio_data: bytes, connection_man
             return False
 
         # Convert ElevenLabs audio to mulaw @ 8000Hz
-        converted_audio = await convert_audio_to_mulaw(audio_data)
+        converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error(f"Audio conversion failed for client {client_id}")
             return False
