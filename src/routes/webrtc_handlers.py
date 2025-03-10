@@ -429,17 +429,20 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 ):
                     buffer += token
 
-                logger.info(f"Complete AI response: {buffer}")
+                logger.info(f"Complete AI response for {client_id}: {buffer}")
 
-                # ✅ Generate TTS audio
+                # Generate TTS audio
                 tts_audio = await tts_service.generate_audio(buffer)
 
-                # ✅ Send audio via WebRTC
+                # Log audio size
                 if tts_audio:
+                    logger.info(f"Generated TTS audio for {client_id}, size: {len(tts_audio)} bytes")
+
+                    # Send audio via WebRTC
                     await send_audio_to_webrtc(client_id, tts_audio)
 
             except Exception as e:
-                logger.error(f"Error in buffered message processing: {str(e)}")
+                logger.error(f"Error in buffered message processing for {client_id}: {str(e)}")
 
         
         # Main message processing loop
