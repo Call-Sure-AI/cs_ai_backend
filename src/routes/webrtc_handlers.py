@@ -29,72 +29,11 @@ vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
 tts_service = TextToSpeechService()
 
-
-
-
-# async def send_audio_to_webrtc(client_id, audio_data):
-#     """
-#     Sends generated audio (TTS output) to the WebRTC client using Twilio Media Streams protocol.
-    
-#     Args:
-#         client_id: The ID of the WebRTC client.
-#         audio_data: The raw audio bytes to be sent.
-#     """
-#     try:
-#         ws = webrtc_manager.connection_manager.active_connections.get(client_id)
-#         if not ws or webrtc_manager.connection_manager.websocket_is_closed(ws):
-#             logger.warning(f"Client {client_id} disconnected before receiving audio.")
-#             return False
-        
-#         # Convert audio to the format expected by Twilio (if needed)
-#         # This likely requires converting from whatever format ElevenLabs provides
-#         # to audio/x-mulaw @ 8000Hz
-        
-#         # You might need a conversion function here:
-#         # audio_data = convert_to_mulaw_8000hz(audio_data)
-        
-#         # Encode the audio as base64
-#         import base64
-#         payload = base64.b64encode(audio_data).decode('utf-8')
-        
-#         # Format as a Twilio Media Streams message
-#         message = {
-#             "event": "media",
-#             "streamSid": client_id.replace("twilio_", "MZ"),  # Construct StreamSid if needed
-#             "media": {
-#                 "payload": payload
-#             }
-#         }
-        
-#         # Send the formatted message
-#         await ws.send_text(json.dumps(message))
-        
-#         # Send a mark event after the media to know when it's done playing
-#         mark_message = {
-#             "event": "mark",
-#             "streamSid": client_id.replace("twilio_", "MZ"),
-#             "mark": {
-#                 "name": f"mark_{time.time()}"  # Unique identifier
-#             }
-#         }
-#         await ws.send_text(json.dumps(mark_message))
-        
-#         logger.info(f"Successfully sent TTS-generated audio to WebRTC client {client_id}")
-#         return True
-#     except Exception as e:
-#         logger.error(f"Error sending audio to WebRTC client {client_id}: {str(e)}")
-#         return False
-
-
-
-
-
-
 import asyncio
 import subprocess
 import base64
-import json
-import time
+
+
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
     process = await asyncio.create_subprocess_exec(
@@ -106,12 +45,9 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
         stderr=asyncio.subprocess.PIPE
     )
     audio_output, error = await process.communicate(input=input_audio_bytes)
-
     if process.returncode != 0:
         raise Exception(f"Audio conversion failed: {error.decode()}")
-
     return audio_output
-
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
     try:
@@ -120,16 +56,16 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             logger.warning(f"WebSocket closed or missing for client {client_id}")
             return False
 
-        # Convert the audio to the Twilio-required format (PCM μ-law, 8000Hz, mono)
+        # Convert the audio into Twilio's required format.
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error("Audio conversion returned empty audio")
             return False
 
-        # Base64 encode the converted audio
+        # Base64 encode the converted audio.
         payload = base64.b64encode(converted_audio).decode('utf-8')
 
-        # Retrieve the stream SID from the app's mapping
+        # Retrieve the stream SID from app state.
         stream_sid = app.state.client_call_mapping.get(client_id)
         if not stream_sid:
             logger.error(f"No stream_sid mapping found for client {client_id}")
@@ -155,15 +91,77 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
         logger.error(f"Error sending audio to WebRTC client {client_id}: {e}")
         return False
 
+async def process_buffered_message(manager, client_id, msg_data, app):
+    try:
+        ws = manager.active_connections.get(client_id)
+        if not ws or manager.websocket_is_closed(ws):
+            logger.warning("Client disconnected before processing")
+            return
+
+        # Retrieve agent resources; if missing, log an error and exit.
+        agent_res = manager.agent_resources.get(client_id)
+        if agent_res is None:
+            logger.error(f"Agent resources not found for client {client_id}")
+            return
+
+        # Extract the chain and rag_service safely.
+        chain = agent_res.get('chain')
+        rag_service = agent_res.get('rag_service')
+        if chain is None or rag_service is None:
+            logger.error(f"Missing chain or rag_service in agent resources for client {client_id}")
+            return
+
+        buffer_text = ""
+        async for token in rag_service.get_answer_with_chain(
+            chain=chain,
+            question=msg_data.get('message', ''),
+            company_name="Callsure AI"
+        ):
+            buffer_text += token
+            if not manager.websocket_is_closed(ws):
+                await manager.send_json(ws, {
+                    "type": "stream_chunk",
+                    "text_content": token
+                })
+
+        logger.info(f"Complete AI response: {buffer_text}")
+
+        if not hasattr(app.state, "response_cache"):
+            app.state.response_cache = {}
+
+        app.state.response_cache[client_id] = {"text": buffer_text, "timestamp": time.time()}
+
+        # Generate TTS audio from the buffer text.
+        audio_data = await tts_service.generate_audio(buffer_text)
+        if audio_data:
+            await send_audio_to_webrtc(app, client_id, audio_data, manager)
+
+    except Exception as e:
+        logger.error(f"Error in buffered message processing: {str(e)}")
+        # Propagate the exception so that retries can occur.
+        raise
+
+async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
+    nonlocal_is_processing = False  # Use a local flag if needed
+    retries = 0
+    success = False
+    while retries < max_retries and not success:
+        try:
+            await process_buffered_message(manager, cid, msg_data, app)
+            success = True
+        except Exception as e:
+            retries += 1
+            logger.error(f"[{cid}] Error processing message (retry {retries}): {str(e)}")
+            await asyncio.sleep(0.5)
+    # Reset processing flag after retries.
+    # (In your code, you already use a nonlocal is_processing flag.)
+    return
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within the WebRTC signaling endpoint."""
-    # Get the FastAPI app instance from the websocket
-    app = websocket.app
+    app = websocket.app  # Get FastAPI app instance from websocket
     connection_manager = app.state.connection_manager
     client_id = peer_id
-
-    # Initialize various counters and timers
     connection_id = str(uuid.uuid4())[:8]
     message_count = 0
     audio_chunks = 0
@@ -182,14 +180,14 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
 
-        # (Existing company and agent initialization code here…)
+        # (Assume company and agent initialization have already been done before calling this handler)
 
-        # Example: Connect client to manager, initialize agent, etc.
+        # Connect the client
         await connection_manager.connect(websocket, client_id)
         logger.info(f"[{connection_id}] Client {client_id} connected to manager")
-        # (Assume agent resources are successfully initialized here)
+        connected = True
 
-        # Define the transcription handler (ensure `app` is captured)
+        # Define the transcription handler
         async def handle_transcription(session_id, transcribed_text):
             nonlocal is_processing, last_processed_time, app
             if not is_processing and transcribed_text.strip():
@@ -200,70 +198,17 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     "message": transcribed_text,
                     "source": "twilio"
                 }
-                # Pass app explicitly to the retry function
                 asyncio.create_task(
                     process_message_with_retries(connection_manager, client_id, message_data, app)
                 )
 
-        # Define a helper to retry processing the message
-        async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
-            nonlocal is_processing
-            retries = 0
-            success = False
-            while retries < max_retries and not success:
-                try:
-                    await process_buffered_message(manager, cid, msg_data, app)
-                    success = True
-                except Exception as e:
-                    retries += 1
-                    logger.error(f"[{cid}] Error processing message (retry {retries}): {str(e)}")
-                    await asyncio.sleep(0.5)
-            is_processing = False
-
-        # Define the function that uses the AI chain and then sends TTS audio
-        async def process_buffered_message(manager, client_id, msg_data, app):
-            try:
-                ws = manager.active_connections.get(client_id)
-                if not ws or manager.websocket_is_closed(ws):
-                    logger.warning("Client disconnected before processing")
-                    return
-
-                agent_res = manager.agent_resources.get(client_id)
-                chain = agent_res['chain']
-                rag_service = agent_res['rag_service']
-
-                buffer = ""
-                async for token in rag_service.get_answer_with_chain(
-                    chain=chain,
-                    question=msg_data.get('message', ''),
-                    company_name="Callsure AI"
-                ):
-                    buffer += token
-                    if not manager.websocket_is_closed(ws):
-                        await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
-
-                logger.info(f"Complete AI response: {buffer}")
-
-                # Cache the response if needed
-                if not hasattr(app.state, "response_cache"):
-                    app.state.response_cache = {}
-                app.state.response_cache[client_id] = {"text": buffer, "timestamp": time.time()}
-
-                # Generate TTS audio from the response text
-                audio_data = await tts_service.generate_audio(buffer)
-                if audio_data:
-                    await send_audio_to_webrtc(app, client_id, audio_data, manager)
-
-            except Exception as e:
-                logger.error(f"Error in buffered message processing: {str(e)}")
-                raise  # Propagate the exception for retries
-
-        # (The rest of your main loop remains the same.)
+        # Main processing loop
         while not websocket_closed:
             try:
                 message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
                 message_count += 1
                 last_message_time = time.time()
+
                 if message.get('type') == 'websocket.disconnect':
                     logger.info(f"[{connection_id}] Received disconnect message")
                     websocket_closed = True
@@ -310,10 +255,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             break
                     except json.JSONDecodeError:
                         logger.warning(f"[{connection_id}] Non-JSON text received")
-                # (Heartbeat and silence checks continue here...)
-
+                # (Heartbeat and silence checks can be added here)
             except asyncio.TimeoutError:
-                # Heartbeat logic...
+                # (Heartbeat logic)
                 pass
             except Exception as e:
                 logger.error(f"[{connection_id}] Error processing message: {str(e)}")
@@ -332,7 +276,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             except Exception as e:
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-     
+
          
         
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
