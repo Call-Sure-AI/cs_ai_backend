@@ -39,7 +39,7 @@ async def handle_incoming_call(request: Request):
     logger.info(f"[TWILIO_CALL_SETUP] Received incoming call from {request.client.host}")
 
     try:
-        # Extract form data with detailed logging
+        # Extract form data
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "unknown_call")
         caller = form_data.get("From", "unknown")
@@ -50,21 +50,11 @@ async def handle_incoming_call(request: Request):
         peer_id = f"twilio_{str(uuid.uuid4())}"
         logger.info(f"[TWILIO_CALL_SETUP] Generated Peer ID: {peer_id}")
 
-        # Store call information with timestamp
-        global active_calls
-        if not 'active_calls' in globals():
-            active_calls = {}
+        # Store call mapping
+        if not hasattr(request.app.state, 'client_call_mapping'):
+            request.app.state.client_call_mapping = {}
+        request.app.state.client_call_mapping[peer_id] = call_sid
 
-        call_start_time = time.time()
-        active_calls[call_sid] = {
-            "peer_id": peer_id,
-            "caller": caller,
-            "start_time": call_start_time,
-            "status": "initiated",
-        }
-        
-        logger.info(f"[TWILIO_CALL_SETUP] Added call to active_calls, count: {len(active_calls)}")
-        
         # Construct WebRTC signaling URL
         host = request.headers.get("host") or request.base_url.hostname
         company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
@@ -73,32 +63,34 @@ async def handle_incoming_call(request: Request):
         stream_url = f"wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}"
         logger.info(f"[TWILIO_CALL_SETUP] WebRTC Stream URL: {stream_url}")
 
-        # Create TwiML response with just Stream, no Say
+        # Create TwiML response - NO SAY ELEMENT AT ALL
         resp = VoiceResponse()
 
-        # WebRTC media streaming with track="both" for bidirectional streaming
+        # WebRTC media streaming
         start = Start()
         start.stream(url=stream_url, track="both")
         resp.append(start)
         
-        # IMPORTANT: Don't use Say here - we'll use media streams for everything
-        # Instead of resp.say(), we'll wait for the welcome message to be sent via WebSocket
-        
-        # Just gather input without saying anything
+        # No <Say> element - we'll send audio via WebSocket
+
+        # Gather input
         resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
         
-        logger.info(f"[TWILIO_CALL_SETUP] TwiML Response prepared (without Say element)")
-
+        # Log and return the TwiML
+        resp_xml = resp.to_xml()
+        logger.info(f"[TWILIO_CALL_SETUP] TwiML Response: {resp_xml}")
+        
         return Response(content=resp.to_xml(), media_type="application/xml")
 
     except Exception as e:
-        logger.error(f"[TWILIO_CALL_SETUP] Error handling incoming call: {str(e)}", exc_info=True)
-        # Fallback for errors only
-        resp = VoiceResponse()
-        resp.say("An error occurred. Please try again later.")
-        return Response(content=resp.to_xml(), media_type="application/xml")
-    
-    
+        logger.error(f"[TWILIO_CALL_SETUP] Error: {str(e)}", exc_info=True)
+        return Response(
+            content=VoiceResponse().say("An error occurred. Please try again later.").to_xml(),
+            media_type="application/xml",
+        )
+
+
+   
 @router.post("/gather")
 async def handle_gather(
     request: Request,
