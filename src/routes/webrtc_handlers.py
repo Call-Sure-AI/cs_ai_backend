@@ -52,6 +52,7 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
             '-ac', '1',         # Mono channel
             '-acodec', 'pcm_mulaw', # μ-law encoding
             '-f', 'mulaw',      # μ-law format
+            '-map_metadata', '-1', # Remove metadata
             'pipe:1',
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -95,13 +96,15 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             logger.error(f"No stream_sid found for client {client_id}")
             return False
             
-        # Prepare media message in Twilio's expected format
+        # Prepare media message EXACTLY as Twilio expects
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
             "media": {
                 "payload": payload,
-                "track": "outbound"  # Explicitly set as outbound audio
+                "track": "outbound",
+                "chunk": "1",  # Add chunk number
+                "timestamp": str(int(time.time() * 1000))  # Add timestamp in milliseconds
             }
         }
         
@@ -124,7 +127,6 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
     except Exception as e:
         logger.error(f"Error sending audio to WebRTC client {client_id}: {e}")
         return False
-    
     
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:

@@ -114,7 +114,6 @@ async def handle_gather(
     SpeechResult: Optional[str] = Form(None),
     CallSid: str = Form(...),
 ):
-    """Handles speech recognition results from Twilio Gather verb."""
     try:
         logger.info(f"Received Twilio Gather request - CallSid: {CallSid}, SpeechResult: {SpeechResult}")
 
@@ -127,10 +126,9 @@ async def handle_gather(
                 media_type="application/xml"
             )
 
-        # Retrieve WebRTC peer ID
+        # Find client ID
         client_id = None
         if hasattr(request.app.state, 'client_call_mapping'):
-            # Find the client_id by reversing the mapping
             for cid, sid in request.app.state.client_call_mapping.items():
                 if sid == CallSid:
                     client_id = cid
@@ -146,27 +144,8 @@ async def handle_gather(
         # Initialize response
         resp = VoiceResponse()
         
-        # Default response if no specific handling occurs
-        default_response = "I'm sorry, I couldn't process your request."
-        
-        # Check for cached response first
-        if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
-            cached_response = request.app.state.response_cache[client_id]
-            response_text = cached_response.get("text", default_response)
-            response_time = cached_response.get("timestamp", 0)
-            
-            # Check if cache is not too old (e.g., within 5 minutes)
-            if time.time() - response_time < 300:
-                logger.info(f"Using cached response for {client_id}: {response_text[:50]}...")
-                resp.say(response_text, voice="Polly.Matthew")
-                
-                # Remove from cache
-                del request.app.state.response_cache[client_id]
-            else:
-                logger.warning("Cached response too old, ignoring.")
-        
-        # If no cached response, process new input
-        if SpeechResult and len(resp.verbs) == 0:
+        # Process new input if available
+        if SpeechResult:
             message_data = {
                 "type": "message", 
                 "message": SpeechResult, 
@@ -174,16 +153,21 @@ async def handle_gather(
             }
             logger.info(f"Sending message to WebRTC client {client_id}: {message_data}")
 
-            # Try to process via WebRTC
+            # Trigger async processing
             if client_id in manager.active_connections and not manager.websocket_is_closed(manager.active_connections[client_id]):
                 asyncio.create_task(manager.process_streaming_message(client_id, message_data))
-                resp.say("I'm processing your request...", voice="Polly.Matthew")
-            else:
-                resp.say("I'm sorry, our connection seems to have been lost. Please try your request again.", voice="Polly.Matthew")
         
-        # If no verbs added yet, use a default prompt
-        if len(resp.verbs) == 0:
-            resp.say("I didn't catch that. Could you please repeat?", voice="Polly.Matthew")
+        # Retrieve cached response
+        response_text = "I'm processing your request. Could you please repeat?"
+        if hasattr(request.app.state, 'response_cache') and client_id in request.app.state.response_cache:
+            cached_response = request.app.state.response_cache[client_id]
+            response_text = cached_response.get("text", response_text)
+            
+            # Remove from cache
+            del request.app.state.response_cache[client_id]
+        
+        # Add response to TwiML
+        resp.say(response_text, voice="Polly.Matthew")
         
         # Continue gathering speech input
         resp.gather(input="speech", timeout="20", action="/api/v1/twilio/gather")
