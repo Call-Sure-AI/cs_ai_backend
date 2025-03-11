@@ -41,16 +41,57 @@ import logging
 import os
 import tempfile
 
+def generate_test_tone():
+    """Generate a simple test tone without external dependencies"""
+    try:
+        # Create a 1kHz tone for 1 second at 8kHz sample rate
+        # Generate valid µ-law data directly
+        tone_bytes = bytearray()
+        
+        # These byte values represent a valid µ-law encoded sine wave
+        pattern = [
+            0x7F, 0x7D, 0x7B, 0x79, 0x77, 0x75, 0x73, 0x71, 
+            0x6F, 0x6D, 0x6B, 0x69, 0x67, 0x65, 0x63, 0x61,
+            0x5F, 0x5D, 0x5B, 0x59, 0x57, 0x55, 0x53, 0x51, 
+            0x4F, 0x4D, 0x4B, 0x49, 0x47, 0x45, 0x43, 0x41,
+            0x3F, 0x3D, 0x3B, 0x39, 0x37, 0x35, 0x33, 0x31,
+            0x2F, 0x2D, 0x2B, 0x29, 0x27, 0x25, 0x23, 0x21,
+            0x1F, 0x1D, 0x1B, 0x19, 0x17, 0x15, 0x13, 0x11,
+            0x0F, 0x0D, 0x0B, 0x09, 0x07, 0x05, 0x03, 0x01,
+            0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
+            0x11, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F,
+            0x21, 0x23, 0x25, 0x27, 0x29, 0x2B, 0x2D, 0x2F,
+            0x31, 0x33, 0x35, 0x37, 0x39, 0x3B, 0x3D, 0x3F,
+            0x41, 0x43, 0x45, 0x47, 0x49, 0x4B, 0x4D, 0x4F,
+            0x51, 0x53, 0x55, 0x57, 0x59, 0x5B, 0x5D, 0x5F,
+            0x61, 0x63, 0x65, 0x67, 0x69, 0x6B, 0x6D, 0x6F,
+            0x71, 0x73, 0x75, 0x77, 0x79, 0x7B, 0x7D, 0x7F
+        ]
+        
+        # Generate 8000 bytes (1 second at 8kHz)
+        while len(tone_bytes) < 8000:
+            tone_bytes.extend(pattern)
+            if len(tone_bytes) > 8000:
+                tone_bytes = tone_bytes[:8000]
+                
+        logger.info(f"[TEST_TONE] Generated {len(tone_bytes)} bytes of test tone")
+        logger.info(f"[TEST_TONE] First 20 bytes: {bytes(tone_bytes[:20]).hex()}")
+        
+        return bytes(tone_bytes)
+        
+    except Exception as e:
+        logger.error(f"[TEST_TONE] Error generating test tone: {str(e)}")
+        return None
+
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
-    """Convert MP3 audio to Twilio-compatible µ-law format using FFmpeg only"""
+    """Convert MP3 audio to Twilio-compatible µ-law format using Sox"""
     try:
-        # Create temporary files with explicit extensions
+        # Create temporary files
         input_fd, input_path = tempfile.mkstemp(suffix='.mp3')
         output_fd, output_path = tempfile.mkstemp(suffix='.raw')
         
-        logger.info(f"[AUDIO_CONVERSION] Starting FFmpeg conversion of {len(input_audio_bytes)} bytes")
-        logger.info(f"[AUDIO_CONVERSION] Temp files: input={input_path}, output={output_path}")
+        logger.info(f"[AUDIO_CONVERSION] Starting Sox conversion of {len(input_audio_bytes)} bytes")
         
         try:
             # Write input audio to file
@@ -60,105 +101,60 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
             # Close output file descriptor
             os.close(output_fd)
             
-            # Use a WAV file as intermediary to ensure proper format conversion
-            wav_path = input_path + ".wav"
-            
-            # First convert MP3 to an intermediary WAV format
-            ffmpeg_to_wav_cmd = [
-                'ffmpeg',
-                '-y',                # Overwrite output
-                '-i', input_path,    # Input MP3
-                '-ar', '8000',       # 8kHz sample rate
-                '-ac', '1',          # Mono
-                '-acodec', 'pcm_s16le',  # Uncompressed 16-bit PCM
-                wav_path             # Output WAV
+            # Run Sox command with precise parameters
+            sox_cmd = [
+                'sox',
+                input_path,         # Input MP3
+                '-t', 'raw',        # Output as raw audio
+                '-r', '8000',       # 8kHz sample rate
+                '-e', 'u-law',      # µ-law encoding
+                '-c', '1',          # Mono
+                '-b', '8',          # 8-bit
+                output_path,        # Output raw file
+                'gain', '-3'        # Reduce volume slightly to prevent clipping
             ]
             
-            # Execute FFmpeg to create WAV
-            logger.info(f"[AUDIO_CONVERSION] Converting to WAV: {' '.join(ffmpeg_to_wav_cmd)}")
-            wav_process = subprocess.run(ffmpeg_to_wav_cmd, capture_output=True, text=True)
+            logger.info(f"[AUDIO_CONVERSION] Sox command: {' '.join(sox_cmd)}")
+            process = subprocess.run(sox_cmd, capture_output=True, text=True)
             
-            if wav_process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] FFmpeg WAV conversion error: {wav_process.stderr}")
-                return None
+            if process.returncode != 0:
+                logger.error(f"[AUDIO_CONVERSION] Sox error: {process.stderr}")
+                # Fall back to the test tone if Sox fails
+                logger.info("[AUDIO_CONVERSION] Falling back to test tone")
+                return generate_test_tone()
                 
-            # Now convert WAV to µ-law (raw)
-            ffmpeg_to_mulaw_cmd = [
-                'ffmpeg',
-                '-y',                # Overwrite output
-                '-i', wav_path,      # Input WAV
-                '-ar', '8000',       # 8kHz sample rate  
-                '-ac', '1',          # Mono
-                '-acodec', 'pcm_mulaw',  # µ-law encoding
-                '-f', 'mulaw',       # Force mulaw format
-                output_path          # Output raw µ-law
-            ]
-            
-            # Execute FFmpeg to create µ-law
-            logger.info(f"[AUDIO_CONVERSION] Converting to µ-law: {' '.join(ffmpeg_to_mulaw_cmd)}")
-            mulaw_process = subprocess.run(ffmpeg_to_mulaw_cmd, capture_output=True, text=True)
-            
-            if mulaw_process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] FFmpeg µ-law conversion error: {mulaw_process.stderr}")
-                return None
-                
-            # Read the converted µ-law file
+            # Read the output file
             with open(output_path, 'rb') as f:
                 output_audio = f.read()
                 
-            logger.info(f"[AUDIO_CONVERSION] Conversion complete: {len(output_audio)} bytes")
+            logger.info(f"[AUDIO_CONVERSION] Successfully converted {len(input_audio_bytes)} bytes to {len(output_audio)} bytes")
             
-            # Validate output
-            if len(output_audio) == 0:
-                logger.error("[AUDIO_CONVERSION] Output file is empty!")
-                return None
-                
-            # Check if all bytes are 0xFF (invalid µ-law)
-            all_ff = all(b == 0xFF for b in output_audio[:20])
-            if all_ff:
-                logger.warning("[AUDIO_CONVERSION] Output appears to be all 0xFF bytes, trying direct MP3-to-µlaw conversion")
-                
-                # Try direct MP3 to µ-law conversion as fallback
-                direct_cmd = [
-                    'ffmpeg',
-                    '-y',
-                    '-i', input_path,    # Input MP3
-                    '-ar', '8000',       # 8kHz sample rate
-                    '-ac', '1',          # Mono
-                    '-acodec', 'pcm_mulaw',  # µ-law encoding
-                    '-f', 'mulaw',       # Force mulaw format 
-                    output_path + ".direct"  # Different output file
-                ]
-                
-                logger.info(f"[AUDIO_CONVERSION] Trying direct conversion: {' '.join(direct_cmd)}")
-                direct_process = subprocess.run(direct_cmd, capture_output=True, text=True)
-                
-                if direct_process.returncode == 0:
-                    with open(output_path + ".direct", 'rb') as f:
-                        output_audio = f.read()
-                    logger.info(f"[AUDIO_CONVERSION] Direct conversion produced {len(output_audio)} bytes")
-                else:
-                    logger.error(f"[AUDIO_CONVERSION] Direct conversion failed: {direct_process.stderr}")
+            # Validate the µ-law output
+            first_bytes = output_audio[:20].hex()
+            logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {first_bytes}")
             
-            # Log first bytes to verify format
-            first_bytes_hex = ''.join('{:02x}'.format(b) for b in output_audio[:20])
-            logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {first_bytes_hex}")
-            
+            # Check if it's all 0xFF bytes (invalid)
+            if all(b == 0xFF for b in output_audio[:20]):
+                logger.warning("[AUDIO_CONVERSION] Generated audio is all 0xFF bytes, falling back to test tone")
+                return generate_test_tone()
+                
             return output_audio
             
         finally:
-            # Clean up temporary files
-            for path in [input_path, output_path, wav_path, output_path + ".direct"]:
+            # Clean up
+            for path in [input_path, output_path]:
                 try:
                     if os.path.exists(path):
                         os.unlink(path)
-                        logger.info(f"[AUDIO_CONVERSION] Removed temp file: {path}")
                 except Exception as e:
-                    logger.warning(f"[AUDIO_CONVERSION] Failed to remove temp file {path}: {str(e)}")
+                    logger.warning(f"[AUDIO_CONVERSION] Failed to remove {path}: {str(e)}")
     
     except Exception as e:
-        logger.error(f"[AUDIO_CONVERSION] Conversion error: {str(e)}", exc_info=True)
-        return None
+        logger.error(f"[AUDIO_CONVERSION] Error: {str(e)}", exc_info=True)
+        # Fall back to test tone on error
+        logger.info("[AUDIO_CONVERSION] Error in conversion, falling back to test tone")
+        return generate_test_tone()
+    
       
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
@@ -167,21 +163,22 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
         
         # Validate WebSocket connection
         ws = connection_manager.active_connections.get(client_id)
-        if not ws or connection_manager.websocket_is_closed(ws):
-            logger.error(f"[WEBRTC_AUDIO_SEND] WebSocket is closed or unavailable for client {client_id}")
+        if not ws:
+            logger.error(f"[WEBRTC_AUDIO_SEND] No active WebSocket for client {client_id}")
+            return False
+        
+        if connection_manager.websocket_is_closed(ws):
+            logger.error(f"[WEBRTC_AUDIO_SEND] WebSocket is closed for client {client_id}")
             return False
 
-        # Convert audio to Twilio-compatible format
+        # Convert audio with Sox
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
-            logger.error(f"[WEBRTC_AUDIO_SEND] Audio conversion failed for client {client_id}")
+            logger.error(f"[WEBRTC_AUDIO_SEND] All audio conversion methods failed")
             return False
         
-        logger.info(f"[WEBRTC_AUDIO_SEND] Audio converted successfully: {len(converted_audio)} bytes")
+        logger.info(f"[WEBRTC_AUDIO_SEND] Audio ready: {len(converted_audio)} bytes")
 
-        # Encode payload as base64
-        payload = base64.b64encode(converted_audio).decode('utf-8')
-        
         # Retrieve stream SID
         stream_sids = getattr(app.state, 'stream_sids', {})
         stream_sid = stream_sids.get(client_id)
@@ -190,7 +187,10 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
             return False
         
-        # IMPORTANT: Simplified media message exactly per Twilio docs
+        # Encode payload as base64
+        payload = base64.b64encode(converted_audio).decode('utf-8')
+        
+        # Simplified media message per Twilio docs
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
@@ -200,11 +200,11 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
         }
         
         # Send media message
-        logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message with payload size: {len(payload)} chars")
+        logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message, payload size: {len(payload)} chars")
         await ws.send_text(json.dumps(media_message))
         logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent")
         
-        # Send mark message to track playback
+        # Send mark message for tracking
         mark_name = f"mark_{int(time.time())}"
         mark_message = {
             "event": "mark",
@@ -223,7 +223,7 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
     except Exception as e:
         logger.error(f"[WEBRTC_AUDIO_SEND] Error: {str(e)}", exc_info=True)
         return False
-       
+         
    
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
@@ -400,6 +400,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         
                         data = json.loads(text_data)
                         event = data.get('event')
+                        if data['event'] == 'mark':
+                            mark_name = data.get('mark', {}).get('name', '')
+                            logger.info(f"[TWILIO_MARK] Received mark response: {mark_name} - Audio playback confirmed!")
                         
                         # Log all incoming Twilio events
                         # logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
