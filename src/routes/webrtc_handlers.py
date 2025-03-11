@@ -43,64 +43,75 @@ import tempfile
 
 
 async def convert_to_twilio_format(input_audio_bytes: bytes):
-    """Convert audio to Twilio-compatible raw μ-law format without headers"""
+    """Convert MP3 audio to Twilio-compatible μ-law format"""
     try:
-        logger.info(f"[AUDIO_CONVERSION] Starting conversion of {len(input_audio_bytes)} bytes")
+        input_file = None
+        output_file = None
         
-        # Use a temporary file approach for more reliable conversion
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file, \
-             tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
+        logger.info(f"[AUDIO_CONVERSION] Starting file-based conversion of {len(input_audio_bytes)} bytes")
+        
+        # Create temporary files
+        input_fd, input_path = tempfile.mkstemp(suffix='.mp3')
+        output_fd, output_path = tempfile.mkstemp(suffix='.raw')
+        
+        try:
+            # Write the input audio to the temp file
+            with os.fdopen(input_fd, 'wb') as f:
+                f.write(input_audio_bytes)
             
-            # Write input audio to temp file
-            input_file.write(input_audio_bytes)
-            input_file.flush()
+            # Close the output file descriptor since ffmpeg will write to it
+            os.close(output_fd)
             
-            # Use ffmpeg binary directly with precise parameters
-            ffmpeg_command = [
-                'ffmpeg', 
-                '-y',                   # Overwrite output
-                '-i', input_file.name,  # Input file
-                '-ar', '8000',          # Sample rate 8kHz
-                '-ac', '1',             # Mono
+            # Run ffmpeg to convert to μ-law
+            cmd = [
+                'ffmpeg',
+                '-y',                  # Overwrite output
+                '-i', input_path,      # Input file
+                '-ar', '8000',         # Sample rate: 8kHz
+                '-ac', '1',            # Mono audio
                 '-acodec', 'pcm_mulaw', # μ-law codec
-                '-f', 'mulaw',          # μ-law format
-                output_file.name        # Output file
+                '-f', 'mulaw',         # μ-law format
+                output_path            # Output file
             ]
             
-            # Execute ffmpeg command
+            # Execute conversion
             start_time = time.time()
-            process = subprocess.run(ffmpeg_command, capture_output=True)
-            conversion_time = time.time() - start_time
+            process = subprocess.run(cmd, capture_output=True, text=True)
             
             if process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] FFmpeg conversion failed: {process.stderr.decode()}")
+                logger.error(f"[AUDIO_CONVERSION] FFmpeg error: {process.stderr}")
                 return None
-            
-            # Read converted audio
-            with open(output_file.name, 'rb') as f:
+                
+            # Read the converted file
+            with open(output_path, 'rb') as f:
                 output_audio = f.read()
+                
+            conversion_time = time.time() - start_time
+            logger.info(f"[AUDIO_CONVERSION] File conversion completed in {conversion_time:.2f}s")
+            logger.info(f"[AUDIO_CONVERSION] Input: {len(input_audio_bytes)} bytes, Output: {len(output_audio)} bytes")
             
-            # Clean up temporary files
-            os.unlink(input_file.name)
-            os.unlink(output_file.name)
-            
-            logger.info(f"[AUDIO_CONVERSION] Conversion successful in {conversion_time:.2f}s")
-            logger.info(f"[AUDIO_CONVERSION] Input size: {len(input_audio_bytes)} bytes, Output size: {len(output_audio)} bytes")
-            
-            # Verify format is not all 0xFF bytes
-            all_ff = all(b == 0xFF for b in output_audio[:20])
-            if all_ff:
-                logger.warning("[AUDIO_CONVERSION] Warning: Output appears to be all 0xFF bytes, which is likely incorrect")
-            
-            # Sample output for debugging
-            logger.info(f"[AUDIO_CONVERSION] Output sample: {output_audio[:20].hex()}")
+            # Verify output isn't all FF bytes
+            if output_audio[:20] == b'\xff' * 20:
+                logger.warning("[AUDIO_CONVERSION] Output still contains all 0xFF bytes")
+                
+            # Log a sample of the output for debugging
+            logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {output_audio[:20].hex()}")
             
             return output_audio
-    
+            
+        finally:
+            # Clean up temporary files
+            try:
+                os.unlink(input_path)
+                os.unlink(output_path)
+                logger.info("[AUDIO_CONVERSION] Temporary files cleaned up")
+            except Exception as e:
+                logger.warning(f"[AUDIO_CONVERSION] Error cleaning temporary files: {str(e)}")
+                
     except Exception as e:
-        logger.error(f"[AUDIO_CONVERSION] Unexpected error: {str(e)}", exc_info=True)
-        return None   
-    
+        logger.error(f"[AUDIO_CONVERSION] Conversion error: {str(e)}", exc_info=True)
+        return None
+       
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
     try:
@@ -108,38 +119,30 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
         
         # Validate WebSocket connection
         ws = connection_manager.active_connections.get(client_id)
-        if not ws:
-            logger.error(f"[WEBRTC_AUDIO_SEND] No active WebSocket for client {client_id}")
-            return False
-        
-        if connection_manager.websocket_is_closed(ws):
-            logger.error(f"[WEBRTC_AUDIO_SEND] WebSocket is closed for client {client_id}")
+        if not ws or connection_manager.websocket_is_closed(ws):
+            logger.error(f"[WEBRTC_AUDIO_SEND] WebSocket is closed or unavailable for client {client_id}")
             return False
 
         # Convert audio to Twilio-compatible format
-        logger.info(f"[WEBRTC_AUDIO_SEND] Converting audio of size {len(audio_data)} bytes")
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error(f"[WEBRTC_AUDIO_SEND] Audio conversion failed for client {client_id}")
             return False
         
-        logger.info(f"[WEBRTC_AUDIO_SEND] Audio converted successfully, size: {len(converted_audio)} bytes")
+        logger.info(f"[WEBRTC_AUDIO_SEND] Audio converted successfully: {len(converted_audio)} bytes")
 
         # Encode payload as base64
         payload = base64.b64encode(converted_audio).decode('utf-8')
         
         # Retrieve stream SID
         stream_sids = getattr(app.state, 'stream_sids', {})
-        logger.info(f"[WEBRTC_AUDIO_SEND] Available stream SIDs: {stream_sids}")
         stream_sid = stream_sids.get(client_id)
         
         if not stream_sid:
             logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
             return False
         
-        logger.info(f"[WEBRTC_AUDIO_SEND] Using stream SID: {stream_sid} for client {client_id}")
-        
-        # IMPORTANT CHANGE: Simplify media message to match Twilio expectations exactly
+        # IMPORTANT: Simplified media message exactly per Twilio docs
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
@@ -148,36 +151,31 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             }
         }
         
-        # Prepare mark message
+        # Send media message
+        logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message with payload size: {len(payload)} chars")
+        await ws.send_text(json.dumps(media_message))
+        logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent")
+        
+        # Send mark message to track playback
+        mark_name = f"mark_{int(time.time())}"
         mark_message = {
             "event": "mark",
             "streamSid": stream_sid,
             "mark": {
-                "name": f"mark_{int(time.time())}"
+                "name": mark_name
             }
         }
         
-        try:
-            # Send media message
-            logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message, payload size: {len(payload)} chars")
-            await ws.send_text(json.dumps(media_message))
-            logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent successfully for client {client_id}")
-            
-            # Send mark message
-            logger.info(f"[WEBRTC_AUDIO_SEND] Sending mark message")
-            await ws.send_text(json.dumps(mark_message))
-            logger.info(f"[WEBRTC_AUDIO_SEND] Mark message sent successfully for client {client_id}")
-            
-            return True
+        logger.info(f"[WEBRTC_AUDIO_SEND] Sending mark message: {mark_name}")
+        await ws.send_text(json.dumps(mark_message))
+        logger.info(f"[WEBRTC_AUDIO_SEND] Mark message sent")
         
-        except Exception as send_error:
-            logger.error(f"[WEBRTC_AUDIO_SEND] Error sending messages: {str(send_error)}", exc_info=True)
-            return False
-
+        return True
+        
     except Exception as e:
-        logger.error(f"[WEBRTC_AUDIO_SEND] Unexpected error for client {client_id}: {str(e)}", exc_info=True)
+        logger.error(f"[WEBRTC_AUDIO_SEND] Error: {str(e)}", exc_info=True)
         return False
-      
+       
    
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
