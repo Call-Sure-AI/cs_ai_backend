@@ -42,18 +42,14 @@ import os
 import tempfile
 
 
-
 async def convert_to_twilio_format(input_audio_bytes: bytes):
-    """
-    Convert MP3 audio to Twilio-compatible µ-law format using a more robust approach
-    that uses Sox instead of FFmpeg for better µ-law encoding.
-    """
+    """Convert MP3 audio to Twilio-compatible µ-law format using FFmpeg only"""
     try:
         # Create temporary files with explicit extensions
         input_fd, input_path = tempfile.mkstemp(suffix='.mp3')
         output_fd, output_path = tempfile.mkstemp(suffix='.raw')
         
-        logger.info(f"[AUDIO_CONVERSION] Starting Sox conversion of {len(input_audio_bytes)} bytes")
+        logger.info(f"[AUDIO_CONVERSION] Starting FFmpeg conversion of {len(input_audio_bytes)} bytes")
         logger.info(f"[AUDIO_CONVERSION] Temp files: input={input_path}, output={output_path}")
         
         try:
@@ -61,97 +57,107 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
             with os.fdopen(input_fd, 'wb') as f:
                 f.write(input_audio_bytes)
             
-            # Close output file descriptor since we'll write to it with Sox
+            # Close output file descriptor
             os.close(output_fd)
             
-            # First convert MP3 to WAV using FFmpeg (more reliable)
+            # Use a WAV file as intermediary to ensure proper format conversion
             wav_path = input_path + ".wav"
-            ffmpeg_cmd = [
+            
+            # First convert MP3 to an intermediary WAV format
+            ffmpeg_to_wav_cmd = [
                 'ffmpeg',
-                '-y',              # Overwrite output
-                '-i', input_path,  # Input file
-                '-acodec', 'pcm_s16le',  # 16-bit PCM
-                '-ar', '8000',     # 8kHz sample rate
-                '-ac', '1',        # Mono
-                wav_path           # Output WAV file
+                '-y',                # Overwrite output
+                '-i', input_path,    # Input MP3
+                '-ar', '8000',       # 8kHz sample rate
+                '-ac', '1',          # Mono
+                '-acodec', 'pcm_s16le',  # Uncompressed 16-bit PCM
+                wav_path             # Output WAV
             ]
             
-            # Execute FFmpeg
-            ffmpeg_process = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
-            if ffmpeg_process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] FFmpeg error: {ffmpeg_process.stderr}")
+            # Execute FFmpeg to create WAV
+            logger.info(f"[AUDIO_CONVERSION] Converting to WAV: {' '.join(ffmpeg_to_wav_cmd)}")
+            wav_process = subprocess.run(ffmpeg_to_wav_cmd, capture_output=True, text=True)
+            
+            if wav_process.returncode != 0:
+                logger.error(f"[AUDIO_CONVERSION] FFmpeg WAV conversion error: {wav_process.stderr}")
                 return None
                 
-            # Now convert WAV to µ-law using Sox (better µ-law encoding)
-            sox_cmd = [
-                'sox',
-                wav_path,         # Input WAV
-                '-t', 'raw',      # Output format: raw
-                '-r', '8000',     # Sample rate: 8kHz
-                '-c', '1',        # Channels: 1 (mono)
-                '-e', 'u-law',    # Encoding: µ-law
-                output_path       # Output file
+            # Now convert WAV to µ-law (raw)
+            ffmpeg_to_mulaw_cmd = [
+                'ffmpeg',
+                '-y',                # Overwrite output
+                '-i', wav_path,      # Input WAV
+                '-ar', '8000',       # 8kHz sample rate  
+                '-ac', '1',          # Mono
+                '-acodec', 'pcm_mulaw',  # µ-law encoding
+                '-f', 'mulaw',       # Force mulaw format
+                output_path          # Output raw µ-law
             ]
             
-            # Execute Sox
-            sox_process = subprocess.run(sox_cmd, capture_output=True, text=True)
-            if sox_process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] Sox error: {sox_process.stderr}")
+            # Execute FFmpeg to create µ-law
+            logger.info(f"[AUDIO_CONVERSION] Converting to µ-law: {' '.join(ffmpeg_to_mulaw_cmd)}")
+            mulaw_process = subprocess.run(ffmpeg_to_mulaw_cmd, capture_output=True, text=True)
+            
+            if mulaw_process.returncode != 0:
+                logger.error(f"[AUDIO_CONVERSION] FFmpeg µ-law conversion error: {mulaw_process.stderr}")
                 return None
                 
-            # Read the converted file
+            # Read the converted µ-law file
             with open(output_path, 'rb') as f:
                 output_audio = f.read()
                 
             logger.info(f"[AUDIO_CONVERSION] Conversion complete: {len(output_audio)} bytes")
             
-            # Verify the output
+            # Validate output
             if len(output_audio) == 0:
                 logger.error("[AUDIO_CONVERSION] Output file is empty!")
                 return None
                 
-            # Check if output is all 0xFF
-            if all(b == 0xFF for b in output_audio[:20]):
-                logger.warning("[AUDIO_CONVERSION] Output contains all 0xFF bytes, trying alternative approach")
+            # Check if all bytes are 0xFF (invalid µ-law)
+            all_ff = all(b == 0xFF for b in output_audio[:20])
+            if all_ff:
+                logger.warning("[AUDIO_CONVERSION] Output appears to be all 0xFF bytes, trying direct MP3-to-µlaw conversion")
                 
-                # Try alternative approach with direct ffmpeg conversion to µ-law
-                alt_output_path = output_path + ".alt"
-                alt_cmd = [
+                # Try direct MP3 to µ-law conversion as fallback
+                direct_cmd = [
                     'ffmpeg',
                     '-y',
-                    '-i', wav_path,
-                    '-f', 'mulaw',
-                    '-ar', '8000',
-                    '-ac', '1',
-                    alt_output_path
+                    '-i', input_path,    # Input MP3
+                    '-ar', '8000',       # 8kHz sample rate
+                    '-ac', '1',          # Mono
+                    '-acodec', 'pcm_mulaw',  # µ-law encoding
+                    '-f', 'mulaw',       # Force mulaw format 
+                    output_path + ".direct"  # Different output file
                 ]
                 
-                alt_process = subprocess.run(alt_cmd, capture_output=True, text=True)
-                if alt_process.returncode != 0:
-                    logger.error(f"[AUDIO_CONVERSION] Alternative conversion failed: {alt_process.stderr}")
-                else:
-                    with open(alt_output_path, 'rb') as f:
+                logger.info(f"[AUDIO_CONVERSION] Trying direct conversion: {' '.join(direct_cmd)}")
+                direct_process = subprocess.run(direct_cmd, capture_output=True, text=True)
+                
+                if direct_process.returncode == 0:
+                    with open(output_path + ".direct", 'rb') as f:
                         output_audio = f.read()
-                    logger.info(f"[AUDIO_CONVERSION] Alternative conversion produced {len(output_audio)} bytes")
-                    os.unlink(alt_output_path)
+                    logger.info(f"[AUDIO_CONVERSION] Direct conversion produced {len(output_audio)} bytes")
+                else:
+                    logger.error(f"[AUDIO_CONVERSION] Direct conversion failed: {direct_process.stderr}")
             
-            # Log first 20 bytes for debugging
-            if len(output_audio) >= 20:
-                logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {output_audio[:20].hex()}")
+            # Log first bytes to verify format
+            first_bytes_hex = ''.join('{:02x}'.format(b) for b in output_audio[:20])
+            logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {first_bytes_hex}")
             
             return output_audio
             
         finally:
             # Clean up temporary files
-            for path in [input_path, output_path, wav_path]:
+            for path in [input_path, output_path, wav_path, output_path + ".direct"]:
                 try:
                     if os.path.exists(path):
                         os.unlink(path)
+                        logger.info(f"[AUDIO_CONVERSION] Removed temp file: {path}")
                 except Exception as e:
-                    logger.warning(f"[AUDIO_CONVERSION] Error cleaning up {path}: {str(e)}")
+                    logger.warning(f"[AUDIO_CONVERSION] Failed to remove temp file {path}: {str(e)}")
     
     except Exception as e:
-        logger.error(f"[AUDIO_CONVERSION] Error: {str(e)}", exc_info=True)
+        logger.error(f"[AUDIO_CONVERSION] Conversion error: {str(e)}", exc_info=True)
         return None
       
 
