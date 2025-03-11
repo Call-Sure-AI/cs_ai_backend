@@ -5,6 +5,8 @@ import asyncio
 from typing import Optional, AsyncGenerator
 from config.settings import settings
 import os
+import time
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,51 +42,42 @@ class TextToSpeechService:
             return 'en'
         return 'en'  # Default to English
     
+        
     async def generate_audio(self, 
-                              text: str, 
-                              language: Optional[str] = None,
-                              voice_settings: Optional[dict] = None) -> Optional[bytes]:
+                            text: str, 
+                            language: Optional[str] = None,
+                            voice_settings: Optional[dict] = None) -> Optional[bytes]:
         """
-        Converts text to speech using ElevenLabs API with enhanced configurations.
-        
-        Args:
-            text (str): Text to convert to speech
-            language (str, optional): Language code to determine voice/model
-            voice_settings (dict, optional): Custom voice settings
-        
-        Returns:
-            Optional[bytes]: Audio bytes or None if generation fails
+        Converts text to speech using ElevenLabs API with performance optimizations.
         """
+        start_time = time.time()
         try:
+            # Log the start of TTS generation with timestamp
+            logger.info(f"[TTS_SERVICE] Starting TTS generation at {start_time:.3f}")
+            logger.info(f"[TTS_SERVICE] Text to convert (length {len(text)}): '{text[:50]}...'")
+            
             # Detect language if not provided
             if not language:
                 language = await self.detect_language(text)
+                logger.info(f"[TTS_SERVICE] Detected language: {language}")
             
-            # Select appropriate voice and model based on language
+            # Select appropriate voice and model
             voice_config = {
                 'en': {
                     'voice_id': 'eleven_monolingual_v1',
-                    'model_id': 'eleven_turbo_v2_5'
+                    'model_id': 'eleven_turbo_v2_5'  # Using turbo for faster generation
                 },
-                'es': {
-                    'voice_id': 'eleven_multilingual_v2',
-                    'model_id': 'eleven_multilingual_v2'
-                },
-                # Add more language configurations as needed
-                'default': {
-                    'voice_id': 'eleven_multilingual_v2',
-                    'model_id': 'eleven_multilingual_v2'
-                }
+                # Other languages...
             }
             
-            # Select voice configuration
-            config = voice_config.get(language, voice_config['default'])
+            config = voice_config.get(language, voice_config.get('en'))
+            logger.info(f"[TTS_SERVICE] Using voice: {config['voice_id']}, model: {config['model_id']}")
             
-            # Default voice settings if not provided
+            # Default voice settings
             default_settings = {
                 "stability": 0.5,
                 "similarity_boost": 0.8,
-                "style": 0.2,
+                "style": 0.0,  # Reduced style for faster generation
                 "use_speaker_boost": True
             }
             
@@ -104,26 +97,37 @@ class TextToSpeechService:
                 "voice_settings": voice_settings
             }
 
-            logger.info(f"Sending TTS request: language={language}, voice={config['voice_id']}, text_length={len(text)}")
+            logger.info(f"[TTS_SERVICE] Sending TTS API request at {time.time()-start_time:.3f}s")
 
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                request_start = time.time()
+                async with session.post(
+                    url, 
+                    json=payload, 
+                    headers=headers, 
+                    timeout=aiohttp.ClientTimeout(total=5)  # Reduced timeout
+                ) as response:
+                    request_time = time.time() - request_start
+                    logger.info(f"[TTS_SERVICE] API request took {request_time:.3f}s")
+                    
                     response_data = await response.read()
+                    total_time = time.time() - start_time
                     
                     if response.status == 200:
-                        logger.info(f"Received audio response, size: {len(response_data)} bytes")
+                        logger.info(f"[TTS_SERVICE] Success! Received {len(response_data)} bytes in {total_time:.3f}s")
                         return response_data
                     else:
                         error_message = await response.text()
-                        logger.error(f"ElevenLabs API error: {response.status} - {error_message}")
+                        logger.error(f"[TTS_SERVICE] API error: {response.status} - {error_message} after {total_time:.3f}s")
                         return None
         
         except asyncio.TimeoutError:
-            logger.error("TTS request timed out")
+            logger.error(f"[TTS_SERVICE] Request timed out after {time.time()-start_time:.3f}s")
             return None
         except Exception as e:
-            logger.error(f"Unexpected error in TTS generation: {str(e)}", exc_info=True)
+            logger.error(f"[TTS_SERVICE] Error in TTS generation: {str(e)} after {time.time()-start_time:.3f}s", exc_info=True)
             return None
+    
     
     async def stream_text_to_speech(self, 
                                     text: str, 

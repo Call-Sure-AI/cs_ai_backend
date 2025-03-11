@@ -36,97 +36,76 @@ active_calls: Dict[str, Dict[str, Any]] = {}
 @router.post("/incoming-call")
 async def handle_incoming_call(request: Request):
     """Handles incoming Twilio voice calls with WebRTC integration."""
-    logger.info(f"[TWILIO_DEBUG] Received incoming call from {request.client.host}")
+    logger.info(f"[TWILIO_CALL_SETUP] Received incoming call from {request.client.host}")
 
     try:
-        # Extensive logging for incoming call
-        logger.info(f"[TWILIO_CALL_INCOMING] Received call from IP: {request.client.host}")
-        
-        # Log full form data with sensitive information masked
+        # Extract form data with detailed logging
         form_data = await request.form()
-        masked_form_data = {
-            key: (value if key not in ['CallSid', 'From', 'To'] else f"*{value[-4:]}")
-            for key, value in dict(form_data).items()
-        }
-        logger.debug(f"[TWILIO_CALL_INCOMING] Form Data: {masked_form_data}")
-
-        # Extract and log call details
         call_sid = form_data.get("CallSid", "unknown_call")
         caller = form_data.get("From", "unknown")
-        called = form_data.get("To", "unknown")
         
-        logger.info(f"[TWILIO_CALL_INCOMING] Call Details:")
-        logger.info(f"  - Call SID: {call_sid}")
-        logger.info(f"  - Caller: {caller}")
-        logger.info(f"  - Called Number: {called}")
+        logger.info(f"[TWILIO_CALL_SETUP] Call SID: {call_sid}, Caller: {caller}")
 
         # Generate unique WebRTC peer ID
         peer_id = f"twilio_{str(uuid.uuid4())}"
-        logger.info(f"[TWILIO_CALL_INCOMING] Generated Peer ID: {peer_id}")
+        logger.info(f"[TWILIO_CALL_SETUP] Generated Peer ID: {peer_id}")
 
-        # Store call information
+        # Store call information with timestamp
         global active_calls
         if not 'active_calls' in globals():
             active_calls = {}
 
+        call_start_time = time.time()
         active_calls[call_sid] = {
             "peer_id": peer_id,
             "caller": caller,
-            "start_time": form_data.get("Timestamp"),
+            "start_time": call_start_time,
             "status": "initiated",
-            "last_activity": time.time(),
         }
         
-        # Ensure client call mapping exists
-        if not hasattr(request.app.state, 'client_call_mapping'):
-            request.app.state.client_call_mapping = {}
+        logger.info(f"[TWILIO_CALL_SETUP] Added call to active_calls, count: {len(active_calls)}")
         
-        # Store mapping both ways
-        request.app.state.client_call_mapping[peer_id] = call_sid
-
         # Construct WebRTC signaling URL
         host = request.headers.get("host") or request.base_url.hostname
         company_api_key = "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35"
         agent_id = "049d0c12-a8d8-4245-b91e-d1e88adccdd5"
 
         stream_url = f"wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}"
-        logger.info(f"[TWILIO_CALL_INCOMING] WebRTC Stream URL: {stream_url}")
+        logger.info(f"[TWILIO_CALL_SETUP] WebRTC Stream URL: {stream_url}")
 
-        # Create TwiML response
+        # Create TwiML response with just Stream, no Say
         resp = VoiceResponse()
 
-        # WebRTC media streaming
+        # WebRTC media streaming with track="both" for bidirectional streaming
         start = Start()
         start.stream(url=stream_url, track="both")
         resp.append(start)
-
-        # Initial greeting
-        resp.say("Hello, I am your AI assistant. How can I help you today?", voice="Polly.Matthew")
-
-        # Gather input
+        
+        # IMPORTANT: Don't use Say here - we'll use media streams for everything
+        # Instead of resp.say(), we'll wait for the welcome message to be sent via WebSocket
+        
+        # Just gather input without saying anything
         resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
         
-        # Log TwiML response
-        resp_xml = resp.to_xml()
-        logger.debug(f"[TWILIO_CALL_INCOMING] TwiML Response:\n{resp_xml}")
-
+        logger.info(f"[TWILIO_CALL_SETUP] TwiML Response prepared (without Say element)")
 
         return Response(content=resp.to_xml(), media_type="application/xml")
 
     except Exception as e:
-        logger.error(f"Error handling incoming call: {str(e)}", exc_info=True)
-        return Response(
-            content=VoiceResponse().say("An error occurred. Please try again later.", voice="alice").to_xml(),
-            media_type="application/xml",
-        )
-
+        logger.error(f"[TWILIO_CALL_SETUP] Error handling incoming call: {str(e)}", exc_info=True)
+        # Fallback for errors only
+        resp = VoiceResponse()
+        resp.say("An error occurred. Please try again later.")
+        return Response(content=resp.to_xml(), media_type="application/xml")
+    
+    
 @router.post("/gather")
 async def handle_gather(
     request: Request,
     SpeechResult: Optional[str] = Form(None),
     CallSid: str = Form(...),
 ):
-    """Enhanced logging for Twilio gather endpoint"""
+    """Enhanced handler for Twilio gather endpoint that relies on WebSocket audio"""
     try:
         # Log gather request details
         logger.info(f"[TWILIO_GATHER] Received Gather Request")
@@ -142,11 +121,11 @@ async def handle_gather(
                 media_type="application/xml"
             )
 
-        # Find client ID
+        # Find client ID by looking up the call SID in our mapping
         client_id = None
         client_call_mapping = getattr(request.app.state, 'client_call_mapping', {})
-        logger.debug(f"[TWILIO_GATHER] Client Call Mapping: {client_call_mapping}")
-
+        logger.debug(f"[TWILIO_GATHER] Available clients in mapping: {list(client_call_mapping.keys())}")
+        
         for cid, sid in client_call_mapping.items():
             if sid == CallSid:
                 client_id = cid
@@ -154,59 +133,50 @@ async def handle_gather(
         
         if not client_id:
             logger.warning(f"[TWILIO_GATHER] No client ID found for CallSid: {CallSid}")
-            return Response(
-                content=VoiceResponse().say("Call session not found.").to_xml(),
-                media_type="application/xml"
-            )
+            # Fallback to empty TwiML response with gather
+            resp = VoiceResponse()
+            resp.gather(input="speech", timeout="20", action="/api/v1/twilio/gather")
+            return Response(content=resp.to_xml(), media_type="application/xml")
         
         logger.info(f"[TWILIO_GATHER] Matched Client ID: {client_id}")
 
-        # Initialize response
-        resp = VoiceResponse()
+        # Check if WebSocket is still active
+        active_connections = manager.active_connections
+        logger.debug(f"[TWILIO_GATHER] Active connections: {list(active_connections.keys())}")
+        
+        websocket_active = client_id in active_connections and not manager.websocket_is_closed(active_connections[client_id])
+        logger.info(f"[TWILIO_GATHER] WebSocket active for {client_id}: {websocket_active}")
         
         # Process new input if available
-        if SpeechResult:
+        if SpeechResult and websocket_active:
             message_data = {
                 "type": "message", 
                 "message": SpeechResult, 
                 "source": "twilio"
             }
             logger.info(f"[TWILIO_GATHER] Sending message to WebRTC client {client_id}: {message_data}")
+            
+            # Send the message to be processed by the AI and then sent over WebSocket
+            # Create a new task to process this message asynchronously
+            asyncio.create_task(manager.process_streaming_message(client_id, message_data))
+            logger.info(f"[TWILIO_GATHER] Created async task to process message for {client_id}")
 
-            # Trigger async processing
-            active_connections = manager.active_connections
-            logger.debug(f"[TWILIO_GATHER] Active Connections: {list(active_connections.keys())}")
-            
-            if client_id in active_connections:
-                connection = active_connections[client_id]
-                is_closed = manager.websocket_is_closed(connection)
-                logger.debug(f"[TWILIO_GATHER] WebSocket for {client_id} closed: {is_closed}")
-                
-                if not is_closed:
-                    asyncio.create_task(manager.process_streaming_message(client_id, message_data))
-                else:
-                    logger.warning(f"[TWILIO_GATHER] WebSocket closed for client {client_id}")
+        # Create TwiML response WITHOUT a Say verb
+        # This is the key fix - we're not using Twilio's voice at all
+        # Instead we rely on the audio sent over WebSocket
+        resp = VoiceResponse()
         
-        # Retrieve cached response
-        response_text = "I'm processing your request. Could you please repeat?"
-        response_cache = getattr(request.app.state, 'response_cache', {})
-        logger.debug(f"[TWILIO_GATHER] Response Cache Keys: {list(response_cache.keys())}")
+        # Check agent resources to determine if we should use specific TwiML
+        agent_resources = manager.agent_resources.get(client_id, {})
+        logger.info(f"[TWILIO_GATHER] Agent resources for {client_id} are {agent_resources}")
         
-        if client_id in response_cache:
-            cached_response = response_cache[client_id]
-            logger.debug(f"[TWILIO_GATHER] Cached Response: {cached_response}")
-            
-            response_text = cached_response.get("text", response_text)
-            
-            # Remove from cache
-            del request.app.state.response_cache[client_id]
-        
-        # Add response to TwiML
-        logger.info(f"[TWILIO_GATHER] Responding with: {response_text}")
-        resp.say(response_text, voice="Polly.Matthew")
+        # Get company info for additional context
+        company_info = manager.client_companies.get(client_id, {})
+        logger.info(f"[TWILIO_GATHER] Company info for {client_id} is {company_info}")
         
         # Continue gathering speech input
-        resp.gather(input="speech", timeout="20", action="/api/v1/twilio/gather")
+        # Use a shorter timeout to improve responsiveness
+        resp.gather(input="speech", timeout="15", action="/api/v1/twilio/gather")
         
         # Log and return the response
         response_xml = resp.to_xml()
@@ -219,8 +189,11 @@ async def handle_gather(
         
         # Fallback error response
         resp = VoiceResponse()
-        resp.say("I'm sorry, we encountered a technical issue.", voice="Polly.Matthew")
+        # Only use say for critical error fallbacks
+        resp.say("I'm sorry, we encountered a technical issue. Please try again later.", voice="Polly.Matthew")
+        resp.gather(input="speech", timeout="10", action="/api/v1/twilio/gather")
         return Response(content=resp.to_xml(), media_type="application/xml")
+
 
 @router.on_event("startup")
 async def startup_event():

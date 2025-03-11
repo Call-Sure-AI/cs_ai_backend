@@ -39,14 +39,13 @@ from fastapi import FastAPI
 from datetime import datetime
 import logging
 
+
 async def convert_to_twilio_format(input_audio_bytes: bytes):
     """Convert audio to Twilio-compatible raw μ-law format without headers"""
     try:
-        logger.info(f"[AUDIO_CONVERSION] Starting conversion")
-        logger.debug(f"[AUDIO_CONVERSION] Input audio size: {len(input_audio_bytes)} bytes")
-        logger.debug(f"[AUDIO_CONVERSION] Input audio first 20 bytes: {input_audio_bytes[:20].hex()}")
-
-        # Use ffmpeg for robust audio conversion
+        logger.info(f"[AUDIO_CONVERSION] Starting conversion of {len(input_audio_bytes)} bytes")
+        
+        # Use ffmpeg for robust audio conversion with detailed parameters
         process = await asyncio.create_subprocess_exec(
             'ffmpeg', '-y', 
             '-f', 'mp3', '-i', 'pipe:0',
@@ -62,26 +61,32 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
         )
         
         # Pass input audio through ffmpeg
+        start_time = time.time()
         audio_output, error = await process.communicate(input=input_audio_bytes)
+        conversion_time = time.time() - start_time
         
         if process.returncode != 0:
             error_msg = error.decode()
-            logger.error(f"[AUDIO_CONVERSION] FFmpeg conversion failed: {error_msg}")
+            logger.error(f"[AUDIO_CONVERSION] FFmpeg conversion failed after {conversion_time:.2f}s: {error_msg}")
             return None
         
-        logger.info(f"[AUDIO_CONVERSION] Conversion successful")
-        logger.debug(f"[AUDIO_CONVERSION] Output audio size: {len(audio_output)} bytes")
-        logger.debug(f"[AUDIO_CONVERSION] Output audio first 20 bytes: {audio_output[:20].hex()}")
+        logger.info(f"[AUDIO_CONVERSION] Conversion successful in {conversion_time:.2f}s")
+        logger.info(f"[AUDIO_CONVERSION] Input size: {len(input_audio_bytes)} bytes, Output size: {len(audio_output)} bytes")
+        
+        # Verify the audio format
+        logger.info(f"[AUDIO_CONVERSION] Output format verification: First 10 bytes: {audio_output[:10].hex()}")
         
         return audio_output
     
     except Exception as e:
         logger.error(f"[AUDIO_CONVERSION] Unexpected error: {str(e)}", exc_info=True)
         return None
+    
+    
 
 async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
     try:
-        logger.info(f"[WEBRTC_AUDIO_SEND] Attempting to send audio for client {client_id}")
+        logger.info(f"[WEBRTC_AUDIO_SEND] Starting audio send for client {client_id}")
         
         # Validate WebSocket connection
         ws = connection_manager.active_connections.get(client_id)
@@ -94,22 +99,27 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             return False
 
         # Convert audio to Twilio-compatible format
+        logger.info(f"[WEBRTC_AUDIO_SEND] Converting audio of size {len(audio_data)} bytes")
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
             logger.error(f"[WEBRTC_AUDIO_SEND] Audio conversion failed for client {client_id}")
             return False
+        
+        logger.info(f"[WEBRTC_AUDIO_SEND] Audio converted successfully, size: {len(converted_audio)} bytes")
 
         # Encode payload as base64
         payload = base64.b64encode(converted_audio).decode('utf-8')
         
-        # Retrieve stream SID
+        # Retrieve stream SID with detailed logging
         stream_sids = getattr(app.state, 'stream_sids', {})
+        logger.info(f"[WEBRTC_AUDIO_SEND] Available stream SIDs: {stream_sids}")
         stream_sid = stream_sids.get(client_id)
         
         if not stream_sid:
             logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
-            logger.debug(f"[WEBRTC_AUDIO_SEND] Available stream SIDs: {stream_sids}")
             return False
+        
+        logger.info(f"[WEBRTC_AUDIO_SEND] Using stream SID: {stream_sid} for client {client_id}")
         
         # Prepare media message
         media_message = {
@@ -132,18 +142,16 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
             }
         }
         
-        # Log detailed message contents
-        logger.debug(f"[WEBRTC_AUDIO_SEND] Media Message: {json.dumps(media_message, indent=2)}")
-        logger.debug(f"[WEBRTC_AUDIO_SEND] Mark Message: {json.dumps(mark_message, indent=2)}")
-        
         try:
-            # Send media message
+            # Send media message with detailed logging
+            logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message, payload size: {len(payload)} chars")
             await ws.send_text(json.dumps(media_message))
-            logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent for client {client_id}")
+            logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent successfully for client {client_id}")
             
             # Send mark message
+            logger.info(f"[WEBRTC_AUDIO_SEND] Sending mark message")
             await ws.send_text(json.dumps(mark_message))
-            logger.info(f"[WEBRTC_AUDIO_SEND] Mark message sent for client {client_id}")
+            logger.info(f"[WEBRTC_AUDIO_SEND] Mark message sent successfully for client {client_id}")
             
             return True
         
@@ -154,7 +162,7 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
     except Exception as e:
         logger.error(f"[WEBRTC_AUDIO_SEND] Unexpected error for client {client_id}: {str(e)}", exc_info=True)
         return False
-
+    
    
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
