@@ -84,7 +84,6 @@ def generate_test_tone():
         return None
 
 
-
 async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
     """
     Streams TTS audio for the given text using the ElevenLabs streaming endpoint,
@@ -96,21 +95,24 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
         logger.error(f"[TTS_STREAM] No active WebSocket for client {client_id}")
         return False
 
-    # Get the TTS service instance (assuming you have it instantiated globally as tts_service)
+    # Instantiate the TTS service (or use a global instance if available)
     from services.speech.tts_service import TextToSpeechService
     tts_service = TextToSpeechService()
-    
-    # Start streaming TTS audio (this yields MP3 chunks)
+
+    # Begin streaming TTS audio (this yields MP3 chunks)
     tts_generator = tts_service.stream_text_to_speech(text)
-    
-    # Set up ffmpeg to convert from MP3 (input) to μ-law (output)
+
+    # Build the ffmpeg command.
+    # Optionally, you can add a volume filter if the output is too quiet:
+    # e.g., ['-af', 'volume=3dB']
     ffmpeg_cmd = [
         'ffmpeg',
         '-hide_banner', '-loglevel', 'error',
-        '-f', 'mp3', '-i', 'pipe:0',    # Input from STDIN in MP3 format
-        '-ar', '8000', '-ac', '1',       # Force 8kHz mono audio
-        '-acodec', 'pcm_mulaw',          # μ-law codec
-        '-f', 'mulaw', 'pipe:1'          # Output raw μ-law data to STDOUT
+        # Let ffmpeg auto-detect input format instead of forcing -f mp3:
+        '-i', 'pipe:0',
+        '-ar', '8000', '-ac', '1',
+        '-acodec', 'pcm_mulaw',
+        '-f', 'mulaw', 'pipe:1'
     ]
     
     process = await asyncio.create_subprocess_exec(
@@ -122,9 +124,12 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
     
     async def feed_ffmpeg():
         try:
-            async for chunk in tts_generator:
-                process.stdin.write(chunk)
-                await process.stdin.drain()
+            async for mp3_chunk in tts_generator:
+                if mp3_chunk:
+                    process.stdin.write(mp3_chunk)
+                    await process.stdin.drain()
+                else:
+                    logger.warning("[TTS_STREAM] Received empty MP3 chunk")
         except Exception as e:
             logger.error(f"[TTS_STREAM] Error feeding ffmpeg: {str(e)}")
         finally:
@@ -133,37 +138,34 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
             except Exception:
                 pass
 
-    # Start feeding MP3 chunks to ffmpeg concurrently
     feed_task = asyncio.create_task(feed_ffmpeg())
     
-    # Read the converted μ-law audio from ffmpeg and send in small chunks
+    # Wait a moment to ensure ffmpeg has started processing
+    await asyncio.sleep(0.1)
+
+    # Read converted μ-law data and send in chunks
     while True:
-        converted_chunk = await process.stdout.read(1024)  # read 1024 bytes at a time
+        converted_chunk = await process.stdout.read(2048)  # increased chunk size
         if not converted_chunk:
-            break  # end of stream
-        
-        # Base64-encode the converted audio chunk
+            break  # End of stream
+        chunk_len = len(converted_chunk)
+        logger.debug(f"[TTS_STREAM] Sending chunk of {chunk_len} bytes")
         encoded_audio = base64.b64encode(converted_chunk).decode('utf-8')
-        # Construct Twilio media message JSON
         stream_sid = app.state.stream_sids.get(client_id, "")
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
-            "media": {
-                "payload": encoded_audio
-            }
+            "media": {"payload": encoded_audio}
         }
         await ws.send_text(json.dumps(media_message))
-        # Delay to mimic real-time playback (adjust delay as needed)
-        await asyncio.sleep(0.01)
+        # Delay to help pace the stream; adjust as needed (e.g., 0.02 seconds)
+        await asyncio.sleep(0.02)
     
-    # Send a final "mark" message to signal end of audio
+    # Send final mark message
     mark_message = {
         "event": "mark",
         "streamSid": app.state.stream_sids.get(client_id, ""),
-        "mark": {
-            "name": f"mark_{int(time.time())}"
-        }
+        "mark": {"name": f"mark_{int(time.time())}"}
     }
     await ws.send_text(json.dumps(mark_message))
     
@@ -172,7 +174,7 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
     logger.info(f"[TTS_STREAM] Completed streaming TTS audio to client {client_id}")
     return True
 
-# Updated process_buffered_message to use streaming TTS audio
+# Update your process_buffered_message to use the new streaming function:
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
@@ -202,14 +204,13 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
         logger.info(f"Complete AI response: {buffer_text}")
-        
-        # Stream the TTS audio in small chunks using our new function
+        # Now stream the TTS audio using the new function
         await stream_tts_audio_to_twilio(app, client_id, buffer_text, manager)
 
     except Exception as e:
         logger.error(f"Buffered message processing error: {str(e)}")
         raise
-
+    
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
