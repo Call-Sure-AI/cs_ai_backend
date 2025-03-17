@@ -75,6 +75,7 @@ async def startup_event():
     app.state.response_cache = {}
     app.state.stream_sids = {} 
     app.state.call_mappings = {}
+    app.state.client_call_mapping = {}  
     logger.info("Initialized shared application state")
     
     logger.info("Application initialized with connection and WebRTC managers")

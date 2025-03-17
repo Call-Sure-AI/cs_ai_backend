@@ -131,27 +131,35 @@ async def convert_to_twilio_format(input_audio_bytes: bytes):
                 logger.warning(f"[AUDIO_CONVERSION] Cleanup error: {str(e)}")   
       
 
-
-async def send_audio_to_webrtc(app, client_id, audio_data, connection_manager):
+async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
     try:
+        logger.info(f"[WEBRTC_AUDIO_SEND] Starting audio send for client {client_id}")
+        
+        # Get the active WebSocket
         ws = connection_manager.active_connections.get(client_id)
         if not ws or connection_manager.websocket_is_closed(ws):
-            logger.error(f"No active WebSocket for client {client_id}")
+            logger.error(f"[WEBRTC_AUDIO_SEND] No active WebSocket for client {client_id}")
             return False
 
+        # Convert the MP3 audio to Twilio-compatible µ-law format using Sox
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
-            logger.error("Audio conversion failed.")
+            logger.error("[WEBRTC_AUDIO_SEND] Audio conversion failed")
             return False
 
-        stream_sid = app.state.stream_sids.get(client_id)
+        logger.info(f"[WEBRTC_AUDIO_SEND] Audio ready: {len(converted_audio)} bytes")
+        
+        # Retrieve the stream SID (make sure it’s been set when processing the 'start' event)
+        stream_sids = getattr(app.state, 'stream_sids', {})
+        stream_sid = stream_sids.get(client_id)
         if not stream_sid:
-            logger.error(f"No stream SID found for client {client_id}")
+            logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
             return False
 
+        # Base64-encode the converted audio payload
         encoded_audio = base64.b64encode(converted_audio).decode('utf-8')
         
-        # Correct media payload for Twilio
+        # Construct the media message in the exact JSON format Twilio expects
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
@@ -160,10 +168,11 @@ async def send_audio_to_webrtc(app, client_id, audio_data, connection_manager):
             }
         }
         
+        # Send the media message
         await ws.send_text(json.dumps(media_message))
-        logger.info(f"Sent media message, payload size: {len(encoded_audio)} chars")
-
-        # Send optional mark message
+        logger.info(f"[WEBRTC_AUDIO_SEND] Sent media message, payload size: {len(encoded_audio)} chars")
+        
+        # Optionally, send a mark event to signal the end of the audio transmission
         mark_message = {
             "event": "mark",
             "streamSid": stream_sid,
@@ -171,16 +180,17 @@ async def send_audio_to_webrtc(app, client_id, audio_data, connection_manager):
                 "name": f"mark_{int(time.time())}"
             }
         }
-
         await ws.send_text(json.dumps(mark_message))
-        logger.info("Mark message sent.")
-
+        logger.info("[WEBRTC_AUDIO_SEND] Mark message sent")
+        
         return True
 
     except Exception as e:
-        logger.error(f"Error sending audio to WebRTC: {str(e)}")
-        return False         
-   
+        logger.error(f"[WEBRTC_AUDIO_SEND] Error: {str(e)}", exc_info=True)
+        return False
+
+
+  
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
@@ -372,31 +382,24 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             
                             
                         
-                        data = json.loads(text_data)
-                        event = data.get('event')
                         if event == 'start':
                             stream_sid = data.get('streamSid')
-                            if stream_sid:
-                                app.state.stream_sids[client_id] = stream_sid
-                                logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}")
                             if not stream_sid:
                                 logger.error("Missing streamSid in start event")
                                 return
-                                
-                            # Store the stream SID for this client
+
+                            # Ensure app.state has a stream_sids dictionary
                             if not hasattr(app.state, 'stream_sids'):
                                 app.state.stream_sids = {}
-                                
-                            
-                            
-                            # Keep the call SID mapping too
+
+                            app.state.stream_sids[client_id] = stream_sid
+
                             call_sid = data.get('start', {}).get('callSid')
                             if call_sid:
                                 if not hasattr(app.state, 'client_call_mapping'):
                                     app.state.client_call_mapping = {}
-                                    
                                 app.state.client_call_mapping[client_id] = call_sid
-                                
+
                             logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}, callSid={call_sid}")
 
                             if not connected:
@@ -406,12 +409,15 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                                     "version": "1.0.0"
                                 }))
                                 connected = True
-                            
+
                             await asyncio.sleep(0.5)
                             if not welcome_sent:
                                 welcome_data = {"type": "message", "message": "__SYSTEM_WELCOME__", "source": "twilio"}
                                 await process_buffered_message(connection_manager, client_id, welcome_data, app)
                                 welcome_sent = True
+
+                        
+                        
                         elif event == 'media':
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
