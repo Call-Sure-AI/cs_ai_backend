@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class TextToSpeechService:
     def __init__(self):
         """Initialize ElevenLabs TTS Service"""
-        self.voice_id = os.getenv("VOICE_ID", "eleven_monolingual_v1")
+        self.voice_id = os.getenv("VOICE_ID","IKne3meq5aSn9XLyUdCD")
         self.api_key = os.getenv("ELEVEN_LABS_API_KEY")
         self.chunk_size = 32 * 1024  # 32KB per chunk for streaming
         self.chunk_delay = 0.01  # 10ms delay to prevent overloading
