@@ -93,7 +93,7 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
     """
     ws = connection_manager.active_connections.get(client_id)
     if not ws or connection_manager.websocket_is_closed(ws):
-        app.logger.error(f"[TTS_STREAM] No active WebSocket for client {client_id}")
+        logger.error(f"[TTS_STREAM] No active WebSocket for client {client_id}")
         return False
 
     # Get the TTS service instance (assuming you have it instantiated globally as tts_service)
@@ -126,7 +126,7 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
                 process.stdin.write(chunk)
                 await process.stdin.drain()
         except Exception as e:
-            app.logger.error(f"[TTS_STREAM] Error feeding ffmpeg: {str(e)}")
+            logger.error(f"[TTS_STREAM] Error feeding ffmpeg: {str(e)}")
         finally:
             try:
                 process.stdin.close()
@@ -169,7 +169,7 @@ async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
     
     await process.wait()
     feed_task.cancel()
-    app.logger.info(f"[TTS_STREAM] Completed streaming TTS audio to client {client_id}")
+    logger.info(f"[TTS_STREAM] Completed streaming TTS audio to client {client_id}")
     return True
 
 # Updated process_buffered_message to use streaming TTS audio
@@ -177,18 +177,18 @@ async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
         if not ws or manager.websocket_is_closed(ws):
-            app.logger.warning("Client disconnected before processing")
+            logger.warning("Client disconnected before processing")
             return
 
         agent_res = manager.agent_resources.get(client_id)
         if not agent_res:
-            app.logger.error(f"No agent resources for client {client_id}")
+            logger.error(f"No agent resources for client {client_id}")
             return
 
         chain = agent_res.get('chain')
         rag_service = agent_res.get('rag_service')
         if not chain or not rag_service:
-            app.logger.error(f"Missing resources in agent for client {client_id}")
+            logger.error(f"Missing resources in agent for client {client_id}")
             return
 
         buffer_text = ""
@@ -201,13 +201,13 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
-        app.logger.info(f"Complete AI response: {buffer_text}")
+        logger.info(f"Complete AI response: {buffer_text}")
         
         # Stream the TTS audio in small chunks using our new function
         await stream_tts_audio_to_twilio(app, client_id, buffer_text, manager)
 
     except Exception as e:
-        app.logger.error(f"Buffered message processing error: {str(e)}")
+        logger.error(f"Buffered message processing error: {str(e)}")
         raise
 
 
