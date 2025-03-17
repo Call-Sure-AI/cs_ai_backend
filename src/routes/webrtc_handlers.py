@@ -85,81 +85,67 @@ def generate_test_tone():
 
 
 
-async def convert_to_twilio_format(input_audio_bytes: bytes):
-    try:
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file:
-            input_file.write(input_audio_bytes)
-            input_path = input_file.name
+async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
+    """
+    Streams TTS audio for the given text using the ElevenLabs streaming endpoint,
+    pipes the MP3 data through ffmpeg for conversion to μ-law, and sends small chunks
+    over the WebSocket to Twilio.
+    """
+    ws = connection_manager.active_connections.get(client_id)
+    if not ws or connection_manager.websocket_is_closed(ws):
+        app.logger.error(f"[TTS_STREAM] No active WebSocket for client {client_id}")
+        return False
 
-        with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
-            output_path = output_file.name
-
-        sox_cmd = [
-            'sox', input_path, '-t', 'raw',
-            '-r', '8000', '-e', 'u-law', '-c', '1', '-b', '8',
-            output_path, 'gain', '-3'
-        ]
-
-        logger.info(f"[AUDIO_CONVERSION] Sox command: {' '.join(sox_cmd)}")
-
-        process = subprocess.run(sox_cmd, capture_output=True, text=True)
-
-        if process.returncode != 0:
-            logger.error(f"[AUDIO_CONVERSION] Sox error: {process.stderr}")
-            return None
-
-        with open(output_path, 'rb') as f:
-            output_audio = f.read()
-
-        # Check for invalid audio (all bytes 0xFF)
-        if all(b == 0xFF for b in output_audio[:20]):
-            logger.warning("[AUDIO_CONVERSION] Generated audio invalid (all 0xFF).")
-            return None
-
-        logger.info(f"[AUDIO_CONVERSION] Successfully converted to {len(output_audio)} bytes.")
-        return output_audio
-
-    except Exception as e:
-        logger.error(f"[AUDIO_CONVERSION] Error: {str(e)}")
-        return None
-    finally:
-        for path in [input_path, output_path]:
+    # Get the TTS service instance (assuming you have it instantiated globally as tts_service)
+    from services.speech.tts_service import TextToSpeechService
+    tts_service = TextToSpeechService()
+    
+    # Start streaming TTS audio (this yields MP3 chunks)
+    tts_generator = tts_service.stream_text_to_speech(text)
+    
+    # Set up ffmpeg to convert from MP3 (input) to μ-law (output)
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-hide_banner', '-loglevel', 'error',
+        '-f', 'mp3', '-i', 'pipe:0',    # Input from STDIN in MP3 format
+        '-ar', '8000', '-ac', '1',       # Force 8kHz mono audio
+        '-acodec', 'pcm_mulaw',          # μ-law codec
+        '-f', 'mulaw', 'pipe:1'          # Output raw μ-law data to STDOUT
+    ]
+    
+    process = await asyncio.create_subprocess_exec(
+        *ffmpeg_cmd,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    
+    async def feed_ffmpeg():
+        try:
+            async for chunk in tts_generator:
+                process.stdin.write(chunk)
+                await process.stdin.drain()
+        except Exception as e:
+            app.logger.error(f"[TTS_STREAM] Error feeding ffmpeg: {str(e)}")
+        finally:
             try:
-                if os.path.exists(path):
-                    os.unlink(path)
-            except Exception as e:
-                logger.warning(f"[AUDIO_CONVERSION] Cleanup error: {str(e)}")   
-      
+                process.stdin.close()
+            except Exception:
+                pass
 
-async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
-    try:
-        logger.info(f"[WEBRTC_AUDIO_SEND] Starting audio send for client {client_id}")
+    # Start feeding MP3 chunks to ffmpeg concurrently
+    feed_task = asyncio.create_task(feed_ffmpeg())
+    
+    # Read the converted μ-law audio from ffmpeg and send in small chunks
+    while True:
+        converted_chunk = await process.stdout.read(1024)  # read 1024 bytes at a time
+        if not converted_chunk:
+            break  # end of stream
         
-        # Get the active WebSocket
-        ws = connection_manager.active_connections.get(client_id)
-        if not ws or connection_manager.websocket_is_closed(ws):
-            logger.error(f"[WEBRTC_AUDIO_SEND] No active WebSocket for client {client_id}")
-            return False
-
-        # Convert the MP3 audio to Twilio-compatible µ-law format using Sox
-        converted_audio = await convert_to_twilio_format(audio_data)
-        if not converted_audio:
-            logger.error("[WEBRTC_AUDIO_SEND] Audio conversion failed")
-            return False
-
-        logger.info(f"[WEBRTC_AUDIO_SEND] Audio ready: {len(converted_audio)} bytes")
-        
-        # Retrieve the stream SID (make sure it’s been set when processing the 'start' event)
-        stream_sids = getattr(app.state, 'stream_sids', {})
-        stream_sid = stream_sids.get(client_id)
-        if not stream_sid:
-            logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
-            return False
-
-        # Base64-encode the converted audio payload
-        encoded_audio = base64.b64encode(converted_audio).decode('utf-8')
-        
-        # Construct the media message in the exact JSON format Twilio expects
+        # Base64-encode the converted audio chunk
+        encoded_audio = base64.b64encode(converted_chunk).decode('utf-8')
+        # Construct Twilio media message JSON
+        stream_sid = app.state.stream_sids.get(client_id, "")
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
@@ -167,46 +153,42 @@ async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, 
                 "payload": encoded_audio
             }
         }
-        
-        # Send the media message
         await ws.send_text(json.dumps(media_message))
-        logger.info(f"[WEBRTC_AUDIO_SEND] Sent media message, payload size: {len(encoded_audio)} chars")
-        
-        # Optionally, send a mark event to signal the end of the audio transmission
-        mark_message = {
-            "event": "mark",
-            "streamSid": stream_sid,
-            "mark": {
-                "name": f"mark_{int(time.time())}"
-            }
+        # Delay to mimic real-time playback (adjust delay as needed)
+        await asyncio.sleep(0.01)
+    
+    # Send a final "mark" message to signal end of audio
+    mark_message = {
+        "event": "mark",
+        "streamSid": app.state.stream_sids.get(client_id, ""),
+        "mark": {
+            "name": f"mark_{int(time.time())}"
         }
-        await ws.send_text(json.dumps(mark_message))
-        logger.info("[WEBRTC_AUDIO_SEND] Mark message sent")
-        
-        return True
+    }
+    await ws.send_text(json.dumps(mark_message))
+    
+    await process.wait()
+    feed_task.cancel()
+    app.logger.info(f"[TTS_STREAM] Completed streaming TTS audio to client {client_id}")
+    return True
 
-    except Exception as e:
-        logger.error(f"[WEBRTC_AUDIO_SEND] Error: {str(e)}", exc_info=True)
-        return False
-
-
-  
+# Updated process_buffered_message to use streaming TTS audio
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
         if not ws or manager.websocket_is_closed(ws):
-            logger.warning("Client disconnected before processing")
+            app.logger.warning("Client disconnected before processing")
             return
 
         agent_res = manager.agent_resources.get(client_id)
         if not agent_res:
-            logger.error(f"No agent resources for client {client_id}")
+            app.logger.error(f"No agent resources for client {client_id}")
             return
 
         chain = agent_res.get('chain')
         rag_service = agent_res.get('rag_service')
         if not chain or not rag_service:
-            logger.error(f"Missing resources in agent for client {client_id}")
+            app.logger.error(f"Missing resources in agent for client {client_id}")
             return
 
         buffer_text = ""
@@ -219,16 +201,14 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
-        audio_data = await tts_service.generate_audio(buffer_text)
-        if audio_data:
-            await send_audio_to_webrtc(app, client_id, audio_data, manager)
-
-        logger.info(f"Complete AI response: {buffer_text}")
+        app.logger.info(f"Complete AI response: {buffer_text}")
+        
+        # Stream the TTS audio in small chunks using our new function
+        await stream_tts_audio_to_twilio(app, client_id, buffer_text, manager)
 
     except Exception as e:
-        logger.error(f"Buffered message processing error: {str(e)}")
+        app.logger.error(f"Buffered message processing error: {str(e)}")
         raise
-
 
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
