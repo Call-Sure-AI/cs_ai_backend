@@ -179,7 +179,7 @@ class TextToSpeechService:
             # Merge custom settings with defaults
             voice_settings = {**default_settings, **(voice_settings or {})}
             
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{config['voice_id']}/stream"
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/IKne3meq5aSn9XLyUdCD/stream"
             headers = {
                 "Accept": "audio/mpeg",
                 "Content-Type": "application/json",
