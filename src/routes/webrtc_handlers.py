@@ -84,146 +84,102 @@ def generate_test_tone():
         return None
 
 
+
 async def convert_to_twilio_format(input_audio_bytes: bytes):
-    """Convert MP3 audio to Twilio-compatible µ-law format using Sox"""
     try:
-        # Create temporary files
-        input_fd, input_path = tempfile.mkstemp(suffix='.mp3')
-        output_fd, output_path = tempfile.mkstemp(suffix='.raw')
-        
-        logger.info(f"[AUDIO_CONVERSION] Starting Sox conversion of {len(input_audio_bytes)} bytes")
-        
-        try:
-            # Write input audio to file
-            with os.fdopen(input_fd, 'wb') as f:
-                f.write(input_audio_bytes)
-            
-            # Close output file descriptor
-            os.close(output_fd)
-            
-            # Run Sox command with precise parameters
-            sox_cmd = [
-                'sox',
-                input_path,         # Input MP3
-                '-t', 'raw',        # Output as raw audio
-                '-r', '8000',       # 8kHz sample rate
-                '-e', 'u-law',      # µ-law encoding
-                '-c', '1',          # Mono
-                '-b', '8',          # 8-bit
-                output_path,        # Output raw file
-                'gain', '-3'        # Reduce volume slightly to prevent clipping
-            ]
-            
-            logger.info(f"[AUDIO_CONVERSION] Sox command: {' '.join(sox_cmd)}")
-            process = subprocess.run(sox_cmd, capture_output=True, text=True)
-            
-            if process.returncode != 0:
-                logger.error(f"[AUDIO_CONVERSION] Sox error: {process.stderr}")
-                # Fall back to the test tone if Sox fails
-                logger.info("[AUDIO_CONVERSION] Falling back to test tone")
-                return generate_test_tone()
-                
-            # Read the output file
-            with open(output_path, 'rb') as f:
-                output_audio = f.read()
-                
-            logger.info(f"[AUDIO_CONVERSION] Successfully converted {len(input_audio_bytes)} bytes to {len(output_audio)} bytes")
-            
-            # Validate the µ-law output
-            first_bytes = output_audio[:20].hex()
-            logger.info(f"[AUDIO_CONVERSION] First 20 bytes: {first_bytes}")
-            
-            # Check if it's all 0xFF bytes (invalid)
-            if all(b == 0xFF for b in output_audio[:20]):
-                logger.warning("[AUDIO_CONVERSION] Generated audio is all 0xFF bytes, falling back to test tone")
-                return generate_test_tone()
-                
-            return output_audio
-            
-        finally:
-            # Clean up
-            for path in [input_path, output_path]:
-                try:
-                    if os.path.exists(path):
-                        os.unlink(path)
-                except Exception as e:
-                    logger.warning(f"[AUDIO_CONVERSION] Failed to remove {path}: {str(e)}")
-    
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file:
+            input_file.write(input_audio_bytes)
+            input_path = input_file.name
+
+        with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
+            output_path = output_file.name
+
+        sox_cmd = [
+            'sox', input_path, '-t', 'raw',
+            '-r', '8000', '-e', 'u-law', '-c', '1', '-b', '8',
+            output_path, 'gain', '-3'
+        ]
+
+        logger.info(f"[AUDIO_CONVERSION] Sox command: {' '.join(sox_cmd)}")
+
+        process = subprocess.run(sox_cmd, capture_output=True, text=True)
+
+        if process.returncode != 0:
+            logger.error(f"[AUDIO_CONVERSION] Sox error: {process.stderr}")
+            return None
+
+        with open(output_path, 'rb') as f:
+            output_audio = f.read()
+
+        # Check for invalid audio (all bytes 0xFF)
+        if all(b == 0xFF for b in output_audio[:20]):
+            logger.warning("[AUDIO_CONVERSION] Generated audio invalid (all 0xFF).")
+            return None
+
+        logger.info(f"[AUDIO_CONVERSION] Successfully converted to {len(output_audio)} bytes.")
+        return output_audio
+
     except Exception as e:
-        logger.error(f"[AUDIO_CONVERSION] Error: {str(e)}", exc_info=True)
-        # Fall back to test tone on error
-        logger.info("[AUDIO_CONVERSION] Error in conversion, falling back to test tone")
-        return generate_test_tone()
-    
+        logger.error(f"[AUDIO_CONVERSION] Error: {str(e)}")
+        return None
+    finally:
+        for path in [input_path, output_path]:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+            except Exception as e:
+                logger.warning(f"[AUDIO_CONVERSION] Cleanup error: {str(e)}")   
       
 
-async def send_audio_to_webrtc(app: FastAPI, client_id: str, audio_data: bytes, connection_manager):
+
+async def send_audio_to_webrtc(app, client_id, audio_data, connection_manager):
     try:
-        logger.info(f"[WEBRTC_AUDIO_SEND] Starting audio send for client {client_id}")
-        
-        # Validate WebSocket connection
         ws = connection_manager.active_connections.get(client_id)
-        if not ws:
-            logger.error(f"[WEBRTC_AUDIO_SEND] No active WebSocket for client {client_id}")
-            return False
-        
-        if connection_manager.websocket_is_closed(ws):
-            logger.error(f"[WEBRTC_AUDIO_SEND] WebSocket is closed for client {client_id}")
+        if not ws or connection_manager.websocket_is_closed(ws):
+            logger.error(f"No active WebSocket for client {client_id}")
             return False
 
-        # Convert audio with Sox
         converted_audio = await convert_to_twilio_format(audio_data)
         if not converted_audio:
-            logger.error(f"[WEBRTC_AUDIO_SEND] All audio conversion methods failed")
+            logger.error("Audio conversion failed.")
             return False
-        
-        logger.info(f"[WEBRTC_AUDIO_SEND] Audio ready: {len(converted_audio)} bytes")
 
-        # Retrieve stream SID
-        stream_sids = getattr(app.state, 'stream_sids', {})
-        stream_sid = stream_sids.get(client_id)
-        
+        stream_sid = app.state.stream_sids.get(client_id)
         if not stream_sid:
-            logger.error(f"[WEBRTC_AUDIO_SEND] No stream SID found for client {client_id}")
+            logger.error(f"No stream SID found for client {client_id}")
             return False
+
+        encoded_audio = base64.b64encode(converted_audio).decode('utf-8')
         
-        # Encode payload as base64
-        payload = base64.b64encode(converted_audio).decode('utf-8')
-        
-        # Simplified media message per Twilio docs
+        # Correct media payload for Twilio
         media_message = {
             "event": "media",
             "streamSid": stream_sid,
             "media": {
-                "payload": payload
+                "payload": encoded_audio
             }
         }
         
-        # Send media message
-        logger.info(f"[WEBRTC_AUDIO_SEND] Sending media message, payload size: {len(payload)} chars")
         await ws.send_text(json.dumps(media_message))
-        logger.info(f"[WEBRTC_AUDIO_SEND] Media message sent")
-        
-        # Send mark message for tracking
-        mark_name = f"mark_{int(time.time())}"
+        logger.info(f"Sent media message, payload size: {len(encoded_audio)} chars")
+
+        # Send optional mark message
         mark_message = {
             "event": "mark",
             "streamSid": stream_sid,
             "mark": {
-                "name": mark_name
+                "name": f"mark_{int(time.time())}"
             }
         }
-        
-        logger.info(f"[WEBRTC_AUDIO_SEND] Sending mark message: {mark_name}")
+
         await ws.send_text(json.dumps(mark_message))
-        logger.info(f"[WEBRTC_AUDIO_SEND] Mark message sent")
-        
+        logger.info("Mark message sent.")
+
         return True
-        
+
     except Exception as e:
-        logger.error(f"[WEBRTC_AUDIO_SEND] Error: {str(e)}", exc_info=True)
-        return False
-         
+        logger.error(f"Error sending audio to WebRTC: {str(e)}")
+        return False         
    
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
@@ -233,14 +189,14 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             return
 
         agent_res = manager.agent_resources.get(client_id)
-        if agent_res is None:
-            logger.error(f"Agent resources not found for client {client_id}")
-            return  # Early exit if agent resources are missing
+        if not agent_res:
+            logger.error(f"No agent resources for client {client_id}")
+            return
 
         chain = agent_res.get('chain')
         rag_service = agent_res.get('rag_service')
-        if chain is None or rag_service is None:
-            logger.error(f"Missing chain or rag_service in agent resources for client {client_id}")
+        if not chain or not rag_service:
+            logger.error(f"Missing resources in agent for client {client_id}")
             return
 
         buffer_text = ""
@@ -253,19 +209,17 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
-        logger.info(f"Complete AI response: {buffer_text}")
-
-        if not hasattr(app.state, "response_cache"):
-            app.state.response_cache = {}
-        app.state.response_cache[client_id] = {"text": buffer_text, "timestamp": time.time()}
-
         audio_data = await tts_service.generate_audio(buffer_text)
         if audio_data:
             await send_audio_to_webrtc(app, client_id, audio_data, manager)
 
+        logger.info(f"Complete AI response: {buffer_text}")
+
     except Exception as e:
-        logger.error(f"Error in buffered message processing: {str(e)}")
-        raise  # Propagate exception for retries
+        logger.error(f"Buffered message processing error: {str(e)}")
+        raise
+
+
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
@@ -422,6 +376,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         event = data.get('event')
                         if event == 'start':
                             stream_sid = data.get('streamSid')
+                            if stream_sid:
+                                app.state.stream_sids[client_id] = stream_sid
+                                logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}")
                             if not stream_sid:
                                 logger.error("Missing streamSid in start event")
                                 return
@@ -430,7 +387,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             if not hasattr(app.state, 'stream_sids'):
                                 app.state.stream_sids = {}
                                 
-                            app.state.stream_sids[client_id] = stream_sid
+                            
                             
                             # Keep the call SID mapping too
                             call_sid = data.get('start', {}).get('callSid')
