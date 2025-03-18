@@ -210,13 +210,12 @@ def test_welcome_websocket(request: Request):
     logger.info(f"[TEST_WELCOME_WEBSOCKET] Using WebSocket URL: {ws_url}")
 
     # Build a TwiML response
-    resp = VoiceResponse()
-    start = resp.start()
+    response = VoiceResponse()
+    start = response.start()
     start.stream(url=ws_url, track="inbound")
-
-    # Return the TwiML as XML
-    return Response(content=resp.to_xml(), media_type="application/xml")
-
+    xml_response = response.to_xml()
+    logger.debug(f"[TEST_WELCOME_WEBSOCKET] TwiML Response:\n{xml_response}")
+    return Response(content=xml_response, media_type="application/xml")
 
 @router.websocket("/test-websocket")
 async def test_websocket(websocket: WebSocket):
