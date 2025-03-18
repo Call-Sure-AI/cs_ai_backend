@@ -212,7 +212,7 @@ def test_welcome_websocket(request: Request):
     # Build a TwiML response
     resp = VoiceResponse()
     connect = Connect()
-    connect.stream(url=ws_url, track="both")  # or inbound/outbound as needed
+    connect.stream(url=ws_url, track="inbound")  # or inbound/outbound as needed
     resp.append(connect)
 
     # Return the TwiML as XML
