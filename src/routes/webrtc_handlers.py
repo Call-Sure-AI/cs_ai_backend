@@ -41,99 +41,7 @@ import logging
 import os
 import tempfile
 
-def generate_test_tone():
-    """Generate a simple test tone without external dependencies"""
-    try:
-        # Create a 1kHz tone for 1 second at 8kHz sample rate
-        # Generate valid µ-law data directly
-        tone_bytes = bytearray()
-        
-        # These byte values represent a valid µ-law encoded sine wave
-        pattern = [
-            0x7F, 0x7D, 0x7B, 0x79, 0x77, 0x75, 0x73, 0x71, 
-            0x6F, 0x6D, 0x6B, 0x69, 0x67, 0x65, 0x63, 0x61,
-            0x5F, 0x5D, 0x5B, 0x59, 0x57, 0x55, 0x53, 0x51, 
-            0x4F, 0x4D, 0x4B, 0x49, 0x47, 0x45, 0x43, 0x41,
-            0x3F, 0x3D, 0x3B, 0x39, 0x37, 0x35, 0x33, 0x31,
-            0x2F, 0x2D, 0x2B, 0x29, 0x27, 0x25, 0x23, 0x21,
-            0x1F, 0x1D, 0x1B, 0x19, 0x17, 0x15, 0x13, 0x11,
-            0x0F, 0x0D, 0x0B, 0x09, 0x07, 0x05, 0x03, 0x01,
-            0x01, 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F,
-            0x11, 0x13, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F,
-            0x21, 0x23, 0x25, 0x27, 0x29, 0x2B, 0x2D, 0x2F,
-            0x31, 0x33, 0x35, 0x37, 0x39, 0x3B, 0x3D, 0x3F,
-            0x41, 0x43, 0x45, 0x47, 0x49, 0x4B, 0x4D, 0x4F,
-            0x51, 0x53, 0x55, 0x57, 0x59, 0x5B, 0x5D, 0x5F,
-            0x61, 0x63, 0x65, 0x67, 0x69, 0x6B, 0x6D, 0x6F,
-            0x71, 0x73, 0x75, 0x77, 0x79, 0x7B, 0x7D, 0x7F
-        ]
-        
-        # Generate 8000 bytes (1 second at 8kHz)
-        while len(tone_bytes) < 8000:
-            tone_bytes.extend(pattern)
-            if len(tone_bytes) > 8000:
-                tone_bytes = tone_bytes[:8000]
-                
-        logger.info(f"[TEST_TONE] Generated {len(tone_bytes)} bytes of test tone")
-        logger.info(f"[TEST_TONE] First 20 bytes: {bytes(tone_bytes[:20]).hex()}")
-        
-        return bytes(tone_bytes)
-        
-    except Exception as e:
-        logger.error(f"[TEST_TONE] Error generating test tone: {str(e)}")
-        return None
 
-
-
-async def stream_tts_audio_to_twilio(app, client_id, text, connection_manager):
-    """
-    Streams TTS audio for the given text using the ElevenLabs streaming endpoint
-    and forwards the audio chunks directly to Twilio via WebSocket.
-    Assumes that your ElevenLabs agent is configured to output μ-law 8000 Hz audio.
-    """
-    ws = connection_manager.active_connections.get(client_id)
-    if not ws or connection_manager.websocket_is_closed(ws):
-        logger.error(f"[TTS_STREAM] No active WebSocket for client {client_id}")
-        return False
-
-    # Instantiate the TTS service (or use your existing global instance)
-    from services.speech.tts_service import TextToSpeechService
-    tts_service = TextToSpeechService()
-
-    # Begin streaming TTS audio—this should return μ-law 8000 Hz audio chunks.
-    tts_generator = tts_service.stream_text_to_speech(text)
-    
-    # For each audio chunk from ElevenLabs, forward it to Twilio.
-    async for audio_chunk in tts_generator:
-        if audio_chunk:
-            chunk_len = len(audio_chunk)
-            logger.debug(f"[TTS_STREAM] Forwarding chunk of {chunk_len} bytes")
-            # Base64-encode the audio chunk.
-            encoded_audio = base64.b64encode(audio_chunk).decode('utf-8')
-            stream_sid = app.state.stream_sids.get(client_id, "")
-            media_message = {
-                "event": "media",
-                "streamSid": stream_sid,
-                "media": {"payload": encoded_audio}
-            }
-            await ws.send_text(json.dumps(media_message))
-            # Delay based on the number of samples: 1 byte/sample at 8000 samples/sec.
-            delay = chunk_len / 8000.0  # seconds
-            await asyncio.sleep(delay)
-        else:
-            logger.warning("[TTS_STREAM] Received empty audio chunk")
-    
-    # When streaming is complete, send a final "mark" message.
-    mark_message = {
-        "event": "mark",
-        "streamSid": app.state.stream_sids.get(client_id, ""),
-        "mark": {"name": f"mark_{int(time.time())}"}
-    }
-    await ws.send_text(json.dumps(mark_message))
-    logger.info(f"[TTS_STREAM] Completed streaming TTS audio to client {client_id}")
-    return True
-
-# Update your message processing function to use the new helper:
 async def process_buffered_message(manager, client_id, msg_data, app):
     try:
         ws = manager.active_connections.get(client_id)
@@ -152,23 +60,97 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.error(f"Missing resources in agent for client {client_id}")
             return
 
-        buffer_text = ""
+        full_response_text = ""
+        sentence_buffer = ""
+        # Instantiate TTS service once for this function
+        tts_service = TextToSpeechService()
+
         async for token in rag_service.get_answer_with_chain(
             chain=chain,
             question=msg_data.get('message', ''),
             company_name="Callsure AI"
         ):
-            buffer_text += token
+            full_response_text += token
+            sentence_buffer += token
+
+            # Optionally, continue to send text chunks as they come
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
 
-        logger.info(f"Complete AI response: {buffer_text}")
-        # Stream the TTS audio (now directly forwarding μ-law data)
-        await stream_tts_audio_to_twilio(app, client_id, buffer_text, manager)
+            # Check if the sentence buffer ends with a sentence-ending punctuation
+            if sentence_buffer.strip() and sentence_buffer.strip()[-1] in ".!?":
+                sentence = sentence_buffer.strip()
+                logger.info(f"Completed sentence for TTS: {sentence}")
+
+                # Generate TTS audio for the complete sentence
+                mp3_bytes = await tts_service.generate_audio(sentence)
+                if mp3_bytes:
+                    # Convert MP3 to μ-law 8000 Hz audio
+                    mu_law_audio = await tts_service.convert_audio_for_twilio(mp3_bytes)
+                    if mu_law_audio:
+                        encoded_audio = base64.b64encode(mu_law_audio).decode("utf-8")
+                        stream_sid = app.state.stream_sids.get(client_id, "")
+                        media_message = {
+                            "event": "media",
+                            "streamSid": stream_sid,
+                            "media": {"payload": encoded_audio}
+                        }
+                        await ws.send_text(json.dumps(media_message))
+                        logger.info("[process_buffered_message] Sent TTS audio for completed sentence.")
+
+                        # Optionally, send a 'mark' event to signal audio playback
+                        mark_message = {
+                            "event": "mark",
+                            "streamSid": stream_sid,
+                            "mark": {"name": f"mark_{int(time.time())}"}
+                        }
+                        await ws.send_text(json.dumps(mark_message))
+                        logger.info("[process_buffered_message] Sent mark event for TTS audio.")
+                    else:
+                        logger.error("[process_buffered_message] Error converting audio for Twilio.")
+                else:
+                    logger.error("[process_buffered_message] Error generating TTS audio.")
+
+                # Reset the sentence buffer after processing the complete sentence
+                sentence_buffer = ""
+
+        # Process any remaining text that may not end with punctuation
+        if sentence_buffer.strip():
+            sentence = sentence_buffer.strip()
+            logger.info(f"Processing remaining text for TTS: {sentence}")
+            mp3_bytes = await tts_service.generate_audio(sentence)
+            if mp3_bytes:
+                mu_law_audio = await tts_service.convert_audio_for_twilio(mp3_bytes)
+                if mu_law_audio:
+                    encoded_audio = base64.b64encode(mu_law_audio).decode("utf-8")
+                    stream_sid = app.state.stream_sids.get(client_id, "")
+                    media_message = {
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {"payload": encoded_audio}
+                    }
+                    await ws.send_text(json.dumps(media_message))
+                    logger.info("[process_buffered_message] Sent final TTS audio for remaining text.")
+
+                    mark_message = {
+                        "event": "mark",
+                        "streamSid": stream_sid,
+                        "mark": {"name": f"mark_{int(time.time())}"}
+                    }
+                    await ws.send_text(json.dumps(mark_message))
+                    logger.info("[process_buffered_message] Sent final mark event.")
+                else:
+                    logger.error("[process_buffered_message] Error converting final audio for Twilio.")
+            else:
+                logger.error("[process_buffered_message] Error generating final TTS audio.")
+
+        logger.info(f"Complete AI response: {full_response_text}")
 
     except Exception as e:
         logger.error(f"Buffered message processing error: {str(e)}")
-        raise 
+        raise
+
+
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
