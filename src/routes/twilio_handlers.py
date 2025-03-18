@@ -211,8 +211,9 @@ def test_welcome_websocket(request: Request):
 
     # Build a TwiML response
     response = VoiceResponse()
-    start = response.start()
-    start.stream(url=ws_url, track="inbound")
+    connect = Connect()
+    connect.stream(url=ws_url)
+    response.append(connect)
     xml_response = response.to_xml()
     logger.debug(f"[TEST_WELCOME_WEBSOCKET] TwiML Response:\n{xml_response}")
     return Response(content=xml_response, media_type="application/xml")
