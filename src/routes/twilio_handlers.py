@@ -67,15 +67,10 @@ async def handle_incoming_call(request: Request):
         # Create TwiML response - NO SAY ELEMENT AT ALL
         resp = VoiceResponse()
 
-        # WebRTC media streaming
-        start = Start()
-        start.stream(url=stream_url, track="both")
-        resp.append(start)
+        connect = Connect()
+        connect.stream(url=stream_url)
+        resp.append(connect)
         
-        # No <Say> element - we'll send audio via WebSocket
-
-        # Gather input
-        resp.gather(input="speech", timeout=20, action="/api/v1/twilio/gather")
         
         # Log and return the TwiML
         resp_xml = resp.to_xml()
