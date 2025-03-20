@@ -84,7 +84,14 @@ class SpeechToTextService:
             energy_ratio = active_bytes / max(len(audio_data), 1) * 100
             logger.debug(f"Audio quality: {len(audio_data)} bytes, {energy_ratio:.2f}% energy, {active_bytes} active, {silent_bytes} silent")
     
-            
+            current_time = time.time()
+            last_forced_process = self.active_sessions[session_id].get("last_forced_process", 0)
+            if current_time - last_forced_process > 3.0 and buffer_size > 1000 and not self.active_sessions[session_id]["processing"]:
+                logger.info(f"Forcing buffer processing after 3 seconds for {session_id}")
+                self.active_sessions[session_id]["last_forced_process"] = current_time
+                should_process = True
+
+
             
             if should_process:
                 self.active_sessions[session_id]["processing"] = True
@@ -119,6 +126,17 @@ class SpeechToTextService:
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Convert audio data to text using Deepgram"""
         try:
+            
+            if len(audio_data) > 1000:
+                # Save a sample of audio data to a file for analysis
+                sample_filename = f"/tmp/audio_sample_{session_id}_{int(time.time())}.mulaw"
+                try:
+                    with open(sample_filename, "wb") as f:
+                        f.write(audio_data[:min(10000, len(audio_data))])
+                    logger.info(f"Saved audio sample to {sample_filename}")
+                except Exception as e:
+                    logger.error(f"Failed to save audio sample: {e}")
+            
             # Deepgram API requires specific headers with Token format
             headers = {
                 "Authorization": f"Token {self.deepgram_api_key}",
@@ -127,14 +145,18 @@ class SpeechToTextService:
             
             # Build the URL with proper query parameters for mulaw audio
             params = {
-                "model": "nova-3",  # Upgrade to latest model
+                "model": "nova-3",
                 "sample_rate": "8000",
                 "encoding": "mulaw",
                 "channels": "1",
-                "punctuate": "true",
+                "punctuate": "true", 
                 "smart_format": "true",
                 "filler_words": "false",
-                "endpointing": "true"  # Add endpointing for better speech detection
+                "endpointing": "true",
+                "vad_turnoff": "500",       # Add this - shorter silence before considering speech finished
+                "interim_results": "true",  # Add this - get partial results faster
+                "utterance_end_ms": "500",  # Add this - shorter utterance boundaries
+                "alternatives": "1"         # Add this - just need one transcription alternative
             }
             
             # Construct the URL properly
@@ -162,7 +184,7 @@ class SpeechToTextService:
                     result = await response.json()
                     
                     # Log the full response for debugging
-                    logger.debug(f"Deepgram response: {json.dumps(result)}")
+                    logger.info(f"Deepgram full response: {json.dumps(result)}")
                     
                     if result and "results" in result:
                         # Check if results contains useful diagnostic info
