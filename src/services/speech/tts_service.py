@@ -193,15 +193,21 @@ class WebSocketTTSService:
             return False
             
         try:
-            # Send empty message to signal end
-            end_message = {"text": ""}
-            await self.ws.send_json(end_message)
-            return True
+            # Check if websocket is still open before sending
+            if self.ws and not self.ws.closed:
+                # Send empty message to signal end
+                end_message = {"text": ""}
+                await self.ws.send_json(end_message)
+                return True
+            else:
+                logger.info("WebSocket already closed, skipping end signal")
+                return False
             
         except Exception as e:
             logger.error(f"Error sending end signal to ElevenLabs: {str(e)}")
+            self.is_connected = False
             return False
-    
+        
     async def _cleanup(self):
         """Clean up resources"""
         self.is_connected = False

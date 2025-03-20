@@ -44,7 +44,6 @@ import logging
 import os
 import tempfile
 
-
 async def process_buffered_message(manager, client_id, msg_data, app):
     # Remove speaking variables related to barge-in
     try:
@@ -134,12 +133,26 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         if current_sentence:
             await ws_tts_service.stream_text(current_sentence)
             
-        # Send empty text to signal end of generation
-        await asyncio.sleep(0.5)  # Allow final audio to generate
-        await ws_tts_service.stream_end()
-        
-        # Close the WebSocket connection
-        await ws_tts_service.close()
+        # Properly handle end of generation with better error handling
+        try:
+            # Allow final audio to generate
+            await asyncio.sleep(0.5)  
+            
+            # Send end signal if possible
+            await ws_tts_service.stream_end()
+            
+            # Small delay before closing
+            await asyncio.sleep(0.2)
+            
+            # Close the WebSocket connection
+            await ws_tts_service.close()
+        except Exception as e:
+            logger.error(f"Error during TTS cleanup: {str(e)}")
+            # Ensure we still try to close the connection
+            try:
+                await ws_tts_service.close()
+            except:
+                pass
         
         logger.info(f"Complete AI response: {full_response_text}")
         return full_response_text
@@ -148,7 +161,8 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         logger.error(f"Buffered message processing error: {str(e)}")
         await ws_tts_service.close() if 'ws_tts_service' in locals() else None
         raise
-
+    
+    
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
     success = False
@@ -657,7 +671,12 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     except Exception as e:
         logger.error(f"[{connection_id}] Error in Twilio Media Stream handler: {str(e)}", exc_info=True)
     finally:
-        stt_service.close_session(client_id)
+        # Properly await the close_session call
+        try:
+            await stt_service.close_session(client_id)
+        except Exception as e:
+            logger.error(f"[{connection_id}] Error closing STT session: {str(e)}")
+            
         if client_id and connection_manager:
             logger.info(f"[{connection_id}] Disconnecting client {client_id}")
             try:
@@ -666,7 +685,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             except Exception as e:
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-        
                  
         
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")

@@ -492,10 +492,17 @@ class DeepgramSTTService:
     
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
         """Convert Twilio's base64 audio format to raw bytes"""
+        if not base64_payload:
+            return None
+            
         try:
             # Decode base64 audio - Twilio's audio is μ-law format at 8kHz
             audio_data = base64.b64decode(base64_payload)
-            logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
+            
+            # Only log for large chunks to reduce log volume
+            if len(audio_data) > 1000:
+                logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
+                
             return audio_data
             
         except Exception as e:
