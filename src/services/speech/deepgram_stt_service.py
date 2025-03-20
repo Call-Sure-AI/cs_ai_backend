@@ -97,23 +97,47 @@ class DeepgramSTTService:
         
         lock = self.connection_locks[session_id]
         
-        while session_id in self.active_sessions and retry_count < max_retries:
+        while retry_count < max_retries:
+            # First check if session still exists before proceeding
+            if session_id not in self.active_sessions:
+                logger.info(f"Session {session_id} no longer exists, stopping connection maintenance")
+                return
+            
             # Check if a connection is already in progress
-            if self.active_sessions[session_id].get("connection_in_progress", False):
-                await asyncio.sleep(0.5)  # Wait before checking again
-                continue
+            try:
+                connection_in_progress = self.active_sessions[session_id].get("connection_in_progress", False)
+                if connection_in_progress:
+                    await asyncio.sleep(0.5)  # Wait before checking again
+                    continue
+            except KeyError:
+                # Session might have been removed by another task
+                logger.info(f"Session {session_id} no longer exists during connection check")
+                return
                 
             async with lock:
+                # Check again if session still exists after acquiring lock
+                if session_id not in self.active_sessions:
+                    logger.info(f"Session {session_id} no longer exists after lock acquisition")
+                    return
+                    
                 try:
                     # Mark connection as in progress
-                    self.active_sessions[session_id]["connection_in_progress"] = True
+                    try:
+                        self.active_sessions[session_id]["connection_in_progress"] = True
+                    except KeyError:
+                        # Session might have been removed by another task
+                        logger.info(f"Session {session_id} no longer exists during connection setup")
+                        return
                     
                     # Check if we already have a working connection
                     if (session_id in self.connections and 
                         "ws" in self.connections[session_id] and 
                         not self.connections[session_id]["ws"].closed):
                         # Connection is already established
-                        self.active_sessions[session_id]["connection_in_progress"] = False
+                        try:
+                            self.active_sessions[session_id]["connection_in_progress"] = False
+                        except KeyError:
+                            pass
                         return
                     
                     # Connect to WebSocket
@@ -121,11 +145,17 @@ class DeepgramSTTService:
                     
                     # If connection was successful, reset retry count
                     retry_count = 0
-                    self.active_sessions[session_id]["connection_in_progress"] = False
+                    # Check session existence again before updating flag
+                    if session_id in self.active_sessions:
+                        self.active_sessions[session_id]["connection_in_progress"] = False
+                    return
                     
                 except Exception as e:
                     retry_count += 1
-                    self.active_sessions[session_id]["connection_in_progress"] = False
+                    # Check session existence before updating flag
+                    if session_id in self.active_sessions:
+                        self.active_sessions[session_id]["connection_in_progress"] = False
+                        
                     logger.error(f"WebSocket connection error for session {session_id}: {str(e)}")
                     logger.info(f"Retrying connection in {retry_delay} seconds (attempt {retry_count}/{max_retries})")
                     await asyncio.sleep(retry_delay)
@@ -133,49 +163,73 @@ class DeepgramSTTService:
         
         if retry_count >= max_retries:
             logger.error(f"Failed to maintain connection for session {session_id} after {max_retries} retries")
-            await self.close_session(session_id)
-            
-            
+            # Only try to close the session if it still exists
+            if session_id in self.active_sessions:
+                await self.close_session(session_id)
+    
+         
     async def _connect_websocket(self, session_id: str):
         """Establish WebSocket connection to Deepgram and set up message handler"""
-        session_data = self.active_sessions[session_id]
-        params = session_data["session_params"]
-        
-        # Build URL with parameters
-        query_params = "&".join(f"{k}={v}" for k, v in params.items())
-        full_url = f"{self.ws_url}?{query_params}"
-        
-        logger.info(f"Connecting to Deepgram at {full_url} for session {session_id}")
-        
-        # Create session and connect to WebSocket
-        session = aiohttp.ClientSession()
-        headers = {"Authorization": f"Token {self.api_key}"}
-        
-        try:
-            ws = await session.ws_connect(
-                full_url,
-                headers=headers,
-                heartbeat=30.0,
-                receive_timeout=60.0
-            )
-            
-            # Store connection objects
-            self.connections[session_id] = {
-                "session": session,
-                "ws": ws
-            }
-            
-            # Start listener task
-            asyncio.create_task(self._listen_for_messages(session_id, ws))
-            
-            logger.info(f"Connected to Deepgram STT WebSocket for session {session_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"WebSocket connection error: {str(e)}")
-            if session and not session.closed:
-                await session.close()
+        # Check if session still exists
+        if session_id not in self.active_sessions:
+            logger.info(f"Session {session_id} no longer exists, aborting connection attempt")
             return False
+            
+        try:
+            session_data = self.active_sessions[session_id]
+            params = session_data["session_params"]
+            
+            # Build URL with parameters
+            query_params = "&".join(f"{k}={v}" for k, v in params.items())
+            full_url = f"{self.ws_url}?{query_params}"
+            
+            logger.info(f"Connecting to Deepgram at {full_url} for session {session_id}")
+            
+            # Create session and connect to WebSocket
+            session = aiohttp.ClientSession()
+            headers = {"Authorization": f"Token {self.api_key}"}
+            
+            try:
+                ws = await session.ws_connect(
+                    full_url,
+                    headers=headers,
+                    heartbeat=30.0,
+                    receive_timeout=60.0
+                )
+                
+                # Check again if session still exists before storing connection
+                if session_id not in self.active_sessions:
+                    logger.info(f"Session {session_id} was closed during connection, closing new connection")
+                    await ws.close()
+                    await session.close()
+                    return False
+                    
+                # Store connection objects
+                self.connections[session_id] = {
+                    "session": session,
+                    "ws": ws
+                }
+                
+                # Start listener task
+                asyncio.create_task(self._listen_for_messages(session_id, ws))
+                
+                logger.info(f"Connected to Deepgram STT WebSocket for session {session_id}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"WebSocket connection error: {str(e)}")
+                if session and not session.closed:
+                    await session.close()
+                return False
+                
+        except KeyError:
+            # Session might have been removed by another task
+            logger.info(f"Session {session_id} no longer exists during connection setup")
+            return False
+        except Exception as e:
+            logger.error(f"Error in _connect_websocket for session {session_id}: {str(e)}")
+            return False
+    
     
     async def _listen_for_messages(self, session_id: str, ws):
         """Listen for messages from Deepgram WebSocket"""
@@ -183,6 +237,7 @@ class DeepgramSTTService:
             logger.info(f"Starting Deepgram message listener for session {session_id}")
             
             async for msg in ws:
+                # Check if session still exists
                 if session_id not in self.active_sessions:
                     logger.info(f"Session {session_id} closed, stopping listener")
                     break
@@ -203,9 +258,11 @@ class DeepgramSTTService:
             logger.error(f"Error in WebSocket listener for session {session_id}: {str(e)}")
             
         finally:
-            # If we exit the listener loop, attempt to reconnect
-            if session_id in self.active_sessions:
+            # If we exit the listener loop, attempt to reconnect only if the session still exists
+            # and hasn't been explicitly closed
+            if session_id in self.active_sessions and not self.active_sessions[session_id].get("is_closing", False):
                 logger.info(f"Attempting to reconnect session {session_id}")
+                # Create a new task for reconnection to avoid blocking
                 asyncio.create_task(self._maintain_connection(session_id))
     
     async def _handle_text_message(self, session_id: str, message_data: str):
@@ -318,18 +375,26 @@ class DeepgramSTTService:
             logger.error(f"Error handling utterance end for session {session_id}: {str(e)}")
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
-                                 callback: Optional[Callable[[str, str], Any]] = None):
+                                callback: Optional[Callable[[str, str], Any]] = None):
         """
         Process an audio chunk for a session with proper connection handling
         """
         try:
+            if not audio_data:
+                return False
+                
             if session_id not in self.active_sessions:
                 # Initialize new session if it doesn't exist
                 await self.create_session(session_id, callback)
-            elif callback and not self.active_sessions[session_id]["transcription_callback"]:
+            elif callback and session_id in self.active_sessions and not self.active_sessions[session_id]["transcription_callback"]:
                 # Update callback if it wasn't set initially
                 self.active_sessions[session_id]["transcription_callback"] = callback
             
+            # Check again if session exists (might have failed to create)
+            if session_id not in self.active_sessions:
+                logger.error(f"Failed to create or find session {session_id}")
+                return False
+                
             # Update activity time
             self.active_sessions[session_id]["last_activity"] = time.time()
             self.last_activity_times[session_id] = time.time()
@@ -338,29 +403,35 @@ class DeepgramSTTService:
             if session_id not in self.connection_locks:
                 self.connection_locks[session_id] = asyncio.Lock()
             
-            # Check if we have an active connection
+            # Try to send audio if we have an active connection
+            sent = False
             async with self.connection_locks[session_id]:
+                # Check if session still exists after acquiring lock
+                if session_id not in self.active_sessions:
+                    return False
+                    
                 if session_id in self.connections and "ws" in self.connections[session_id]:
                     ws = self.connections[session_id]["ws"]
                     if not ws.closed:
                         await ws.send_bytes(audio_data)
-                        return True
+                        sent = True
             
-            # If we don't have an active connection or it's closed, buffer the audio
-            # until the connection is established
-            self.active_sessions[session_id]["buffer"] += audio_data
+            # If we couldn't send, buffer the audio and try to establish connection
+            if not sent and session_id in self.active_sessions:
+                # If we don't have an active connection or it's closed, buffer the audio
+                # until the connection is established
+                self.active_sessions[session_id]["buffer"] += audio_data
+                
+                # Check if a connection is already in progress
+                if not self.active_sessions[session_id].get("connection_in_progress", False):
+                    # Start a new connection if one isn't already in progress
+                    asyncio.create_task(self._maintain_connection(session_id))
             
-            # Check if a connection is already in progress
-            if not self.active_sessions[session_id].get("connection_in_progress", False):
-                # Start a new connection if one isn't already in progress
-                asyncio.create_task(self._maintain_connection(session_id))
-            
-            return False
+            return sent
             
         except Exception as e:
             logger.error(f"Error processing audio chunk for session {session_id}: {str(e)}")
-            return False
-        
+            return False  
         
     async def process_final_buffer(self, session_id: str, callback: Optional[Callable] = None):
         """Process any remaining audio in the buffer when a session ends"""
@@ -406,6 +477,7 @@ class DeepgramSTTService:
     async def close_session(self, session_id: str):
         """Close a speech recognition session with proper locking"""
         if session_id not in self.active_sessions:
+            logger.info(f"Session {session_id} doesn't exist, no need to close")
             return False
             
         # Get the lock for this session
@@ -420,8 +492,15 @@ class DeepgramSTTService:
             try:
                 logger.info(f"Closing Deepgram STT session: {session_id}")
                 
+                # Set a flag to indicate we're closing this session to prevent reconnection attempts
+                if session_id in self.active_sessions:
+                    self.active_sessions[session_id]["is_closing"] = True
+                
                 # Cancel connection task if it exists
-                connection_task = self.active_sessions[session_id].get("connection_task")
+                connection_task = None
+                if session_id in self.active_sessions:
+                    connection_task = self.active_sessions[session_id].get("connection_task")
+                    
                 if connection_task and not connection_task.done():
                     connection_task.cancel()
                     try:
@@ -457,15 +536,24 @@ class DeepgramSTTService:
                 self.user_speech_buffers.pop(session_id, None)
                 self.last_activity_times.pop(session_id, None)
                 self.speech_in_progress.pop(session_id, None)
-                self.connection_locks.pop(session_id, None)
+                # Keep the lock around until the method finishes
                 
                 logger.info(f"Closed speech recognition session {session_id}")
+                
+                # Finally remove the lock
+                self.connection_locks.pop(session_id, None)
                 return True
                 
             except Exception as e:
                 logger.error(f"Error closing session {session_id}: {str(e)}")
+                # Still try to clean up
+                self.connections.pop(session_id, None)
+                self.active_sessions.pop(session_id, None)
+                self.user_speech_buffers.pop(session_id, None)
+                self.last_activity_times.pop(session_id, None)
+                self.speech_in_progress.pop(session_id, None)
+                self.connection_locks.pop(session_id, None)
                 return False
-    
     
     async def get_completed_speech(self, session_id: str):
         """Get all completed speech for a session"""
