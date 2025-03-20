@@ -25,9 +25,10 @@ class SpeechToTextService:
         if not self.deepgram_api_key:
             logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
             
+    
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                 callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
-        """Process an audio chunk for a session"""
+        """Process an audio chunk for a session with faster response time"""
         try:
             if session_id not in self.active_sessions:
                 # Initialize new session
@@ -36,6 +37,7 @@ class SpeechToTextService:
                     "last_activity": time.time(),
                     "processing": False,
                     "chunk_count": 0,
+                    "energy_levels": [],  # Track energy for better silence detection
                 }
                 
             # Add to buffer
@@ -43,15 +45,40 @@ class SpeechToTextService:
             self.active_sessions[session_id]["chunk_count"] += 1
             self.active_sessions[session_id]["last_activity"] = time.time()
             
-            # Check if we've accumulated enough data for transcription
+            # Calculate energy level to detect speech vs silence
+            if len(audio_data) > 0:
+                # For μ-law, silence is typically around value 128
+                non_silent_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
+                energy_level = (non_silent_bytes / len(audio_data)) * 100
+                
+                # Keep a rolling window of energy levels
+                energies = self.active_sessions[session_id].get("energy_levels", [])
+                energies.append(energy_level)
+                if len(energies) > 5:  # Keep last 5 energy readings
+                    energies.pop(0)
+                self.active_sessions[session_id]["energy_levels"] = energies
+            
+            # Get buffer size
             buffer_size = len(self.active_sessions[session_id]["buffer"])
             
             # Log buffer growth occasionally
             if self.active_sessions[session_id]["chunk_count"] % 100 == 0:
                 logger.info(f"Audio buffer for {session_id}: {buffer_size} bytes after {self.active_sessions[session_id]['chunk_count']} chunks")
             
-            # Reduce buffer threshold from 16000 to 8000 bytes
-            if buffer_size > 8000 and not self.active_sessions[session_id]["processing"]:
+            # Process based on buffer size or detected energy
+            # Further reduce buffer threshold to improve responsiveness
+            should_process = False
+            
+            # Standard threshold-based processing
+            if buffer_size > 6000 and not self.active_sessions[session_id]["processing"]:
+                should_process = True
+                
+            # Energy-based processing - process immediately if we detect speech
+            energy_avg = sum(self.active_sessions[session_id].get("energy_levels", [0])) / max(len(self.active_sessions[session_id].get("energy_levels", [1])), 1)
+            if energy_avg > 15.0 and buffer_size > 4000 and not self.active_sessions[session_id]["processing"]:
+                should_process = True
+            
+            if should_process:
                 self.active_sessions[session_id]["processing"] = True
                 
                 # Get buffer copy
@@ -69,7 +96,7 @@ class SpeechToTextService:
                     await callback(session_id, text)
                 elif text and text.strip():
                     logger.info(f"Recognized speech for {session_id} but no callback: '{text}'")
-                elif self.active_sessions[session_id]["chunk_count"] > 300:  # Reduced from 500
+                elif self.active_sessions[session_id]["chunk_count"] > 200:  # Reduced threshold
                     # If we've collected a lot of audio but still no speech, log it
                     logger.warning(f"No speech detected after {self.active_sessions[session_id]['chunk_count']} chunks for {session_id}")
                     
@@ -80,7 +107,7 @@ class SpeechToTextService:
         except Exception as e:
             logger.error(f"Error processing audio chunk for session {session_id}: {str(e)}")
             return False
-           
+        
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Convert audio data to text using Deepgram"""
         try:

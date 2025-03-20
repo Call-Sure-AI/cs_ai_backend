@@ -189,45 +189,81 @@ class WebSocketTTSService:
             # If conversion fails, return original audio as fallback
             return pcm_audio_bytes
             
+    
     async def stream_text(self, text: str):
-        """Stream text to ElevenLabs for TTS generation according to their protocol"""
+        """Stream text to ElevenLabs with lower latency"""
         if not text or not text.strip():
-            logger.debug("Empty text provided, skipping TTS generation")
-            return True  # Consider empty text as success
+            return True
             
-        # Check connection state
         if not self.is_connected or not self.ws or self.ws.closed:
             logger.warning("Not connected to ElevenLabs, attempting to reconnect")
             success = await self.connect(self.audio_callback)
             if not success:
-                logger.error("Failed to reconnect to ElevenLabs")
                 return False
-                
-        # Make sure we've sent the initial message
+                    
         if not self.has_sent_initial_message:
             logger.error("Cannot stream text before initial message is sent")
             return False
         
         try:
-            # Add punctuation if missing to improve speech generation
-            text = text.strip()
-            if text and not any(text.endswith(c) for c in ".!?"):
-                text = text + "."
+            # Break text into smaller chunks for faster processing
+            # ElevenLabs processes shorter text faster
+            sentences = []
+            current = ""
             
-            # Create message with try_trigger_generation flag as per documentation
-            message = {
-                "text": text,
-                "try_trigger_generation": True
-            }
+            # Split into natural sentences
+            for char in text:
+                current += char
+                if char in ".!?" and len(current) > 3:
+                    sentences.append(current)
+                    current = ""
             
-            # Send to WebSocket with timeout
-            logger.info(f"Sending text to ElevenLabs: '{text}'")
-            await asyncio.wait_for(self.ws.send_json(message), timeout=5.0)
+            if current.strip():
+                sentences.append(current)
             
-            # Wait a moment to ensure processing starts
-            await asyncio.sleep(0.1)
+            # If very long text, break into smaller chunks
+            processed_sentences = []
+            for sentence in sentences:
+                if len(sentence) > 100:
+                    # Break into smaller phrases by commas or conjunctions
+                    parts = sentence.split(", ")
+                    current_part = ""
+                    for part in parts:
+                        if len(current_part) + len(part) < 100:
+                            current_part += part + ", "
+                        else:
+                            if current_part:
+                                processed_sentences.append(current_part)
+                            current_part = part + ", "
+                    if current_part:
+                        processed_sentences.append(current_part)
+                else:
+                    processed_sentences.append(sentence)
+            
+            # Process each sentence/chunk individually for faster TTS
+            for chunk in processed_sentences:
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                    
+                # Ensure punctuation for better speech synthesis
+                if not any(chunk.endswith(c) for c in ".!?"):
+                    chunk = chunk + "."
+                
+                # Send with try_trigger_generation for immediate processing
+                message = {
+                    "text": chunk,
+                    "try_trigger_generation": True
+                }
+                
+                logger.info(f"Sending text chunk to ElevenLabs: '{chunk}'")
+                await asyncio.wait_for(self.ws.send_json(message), timeout=5.0)
+                
+                # Small delay between chunks to allow processing
+                await asyncio.sleep(0.05)
+                
             return True
-            
+                
         except asyncio.TimeoutError:
             logger.error("Timeout sending text to ElevenLabs")
             self.is_connected = False
@@ -236,7 +272,8 @@ class WebSocketTTSService:
             logger.error(f"Error sending text to ElevenLabs: {str(e)}")
             self.is_connected = False
             return False
-        
+    
+      
     async def stream_end(self):
         """Signal end of stream with empty text"""
         if not self.is_connected:
