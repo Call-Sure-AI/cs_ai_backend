@@ -8,6 +8,9 @@ import json
 import time
 import os
 from typing import Optional, AsyncGenerator, Dict, Any, Callable, List
+import io
+import wave
+import audioop
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +57,7 @@ class WebSocketTTSService:
                 url = f"{self.base_url}/{self.voice_id}/stream-input"
                 params = {
                     "model_id": "eleven_turbo_v2",  # Use turbo model
-                    "output_format": "mulaw_8000",  # Twilio format
+                    "output_format": "pcm_44100",   # Use PCM format (supported by ElevenLabs)
                     "optimize_streaming_latency": "3",  # Max optimization
                 }
                 
@@ -129,14 +132,17 @@ class WebSocketTTSService:
                             if audio_chunks_received == 1:
                                 logger.info(f"Received first audio chunk from ElevenLabs: {len(audio_bytes)} bytes")
                             
+                            # Convert PCM 44.1kHz to μ-law 8kHz for Twilio
+                            mulaw_audio = self._convert_to_mulaw(audio_bytes)
+                            
                             # Put in queue if callback isn't set
                             if self.audio_callback:
                                 try:
-                                    await self.audio_callback(audio_bytes)
+                                    await self.audio_callback(mulaw_audio)
                                 except Exception as e:
                                     logger.error(f"Error in audio callback: {str(e)}")
                             else:
-                                await self.audio_queue.put(audio_bytes)
+                                await self.audio_queue.put(mulaw_audio)
                         # Log any error messages from ElevenLabs        
                         elif "error" in data:
                             logger.error(f"ElevenLabs API error: {data['error']}")
@@ -165,7 +171,27 @@ class WebSocketTTSService:
             
         finally:
             logger.info("ElevenLabs WebSocket audio listener stopped")
+    
+    def _convert_to_mulaw(self, pcm_audio_bytes):
+        """
+        Convert PCM audio (44.1kHz, 16-bit, mono) to μ-law encoded audio (8kHz, 8-bit, mono)
+        for Twilio compatibility
+        """
+        try:
+            # Convert PCM audio to 8kHz sampling rate
+            # First, assume the input is 16-bit PCM at 44.1kHz
+            # Downsample from 44.1kHz to 8kHz
+            downsampled_audio = audioop.ratecv(pcm_audio_bytes, 2, 1, 44100, 8000, None)[0]
             
+            # Convert from 16-bit PCM to μ-law encoding (8-bit)
+            mulaw_audio = audioop.lin2ulaw(downsampled_audio, 2)
+            
+            return mulaw_audio
+            
+        except Exception as e:
+            logger.error(f"Error converting audio format: {str(e)}")
+            # If conversion fails, return original audio as fallback
+            return pcm_audio_bytes
             
     async def stream_text(self, text: str):
         """Stream text to ElevenLabs for TTS generation"""
@@ -250,7 +276,6 @@ class WebSocketTTSService:
         # Clean up resources
         await self._cleanup()
         logger.info("Closed ElevenLabs WebSocket connection")
-        
         
     async def get_audio(self, timeout=5.0):
         """Get next audio chunk from queue with timeout"""
