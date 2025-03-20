@@ -255,3 +255,24 @@ class WebSocketTTSService:
         while not self.audio_queue.empty():
             chunks.append(await self.audio_queue.get())
         return b''.join(chunks)
+
+    async def stream_end(self):
+        """Signal end of stream with empty text"""
+        if not self.is_connected:
+            return False
+            
+        try:
+            # Check if websocket is still open before sending
+            if self.ws and not self.ws.closed:
+                # Send empty message to signal end
+                end_message = {"text": ""}
+                await self.ws.send_json(end_message)
+                return True
+            else:
+                logger.info("WebSocket already closed, skipping end signal")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending end signal to ElevenLabs: {str(e)}")
+            self.is_connected = False
+            return False
