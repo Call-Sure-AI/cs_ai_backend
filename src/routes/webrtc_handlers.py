@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Initialize services
 vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
-ws_tts_service = WebSocketTTSService()
+
 stt_service = SpeechToTextService() 
 
 
@@ -87,6 +87,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         
         # Create new TTS service for this response
         tts_service = WebSocketTTSService()
+        
         await tts_service.connect(send_audio_to_twilio)
         
         # Collect the full response for logging

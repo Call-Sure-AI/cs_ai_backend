@@ -158,13 +158,13 @@ class WebSocketTTSService:
             logger.info("ElevenLabs WebSocket audio listener stopped")
     
     async def stream_text(self, text: str):
-        """
-        Stream text to ElevenLabs for TTS generation
-        
-        Args:
-            text: Text chunk to send
-        """
-        if not self.is_connected:
+        """Stream text to ElevenLabs for TTS generation"""
+        if not text or not text.strip():
+            logger.debug("Empty text provided, skipping TTS generation")
+            return True  # Consider empty text as success
+            
+        # Check connection state
+        if not self.is_connected or not self.ws or self.ws.closed:
             logger.warning("Not connected to ElevenLabs, attempting to reconnect")
             success = await self.connect(self.audio_callback)
             if not success:
@@ -178,33 +178,16 @@ class WebSocketTTSService:
                 "try_trigger_generation": True
             }
             
-            # Send to WebSocket
-            await self.ws.send_json(message)
+            # Send to WebSocket with timeout
+            await asyncio.wait_for(self.ws.send_json(message), timeout=5.0)
             return True
             
-        except Exception as e:
-            logger.error(f"Error sending text to ElevenLabs: {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error("Timeout sending text to ElevenLabs")
             self.is_connected = False
             return False
-    
-    async def stream_end(self):
-        """Signal end of stream with empty text"""
-        if not self.is_connected:
-            return False
-            
-        try:
-            # Check if websocket is still open before sending
-            if self.ws and not self.ws.closed:
-                # Send empty message to signal end
-                end_message = {"text": ""}
-                await self.ws.send_json(end_message)
-                return True
-            else:
-                logger.info("WebSocket already closed, skipping end signal")
-                return False
-            
         except Exception as e:
-            logger.error(f"Error sending end signal to ElevenLabs: {str(e)}")
+            logger.error(f"Error sending text to ElevenLabs: {str(e)}")
             self.is_connected = False
             return False
         
@@ -222,37 +205,42 @@ class WebSocketTTSService:
             self.listener_task = None
         
         # Close WebSocket
-        if self.ws:
+        ws = self.ws
+        self.ws = None  # Clear reference first
+        if ws and not ws.closed:
             try:
-                await self.ws.close()
-            except:
-                pass
-            self.ws = None
-            
+                await ws.close()
+            except Exception as e:
+                logger.error(f"Error closing WebSocket: {str(e)}")
+        
         # Close session
-        if self.session:
+        session = self.session
+        self.session = None  # Clear reference first
+        if session and not session.closed:
             try:
-                await self.session.close()
-            except:
-                pass
-            self.session = None
+                await session.close()
+            except Exception as e:
+                logger.error(f"Error closing session: {str(e)}")
     
     async def close(self):
         """Close the WebSocket connection"""
+        if self.is_closed:
+            return  # Already closed, avoid duplicate close
+            
         self.is_closed = True
         
-        # Send end signal if possible
-        if self.is_connected and self.ws and not self.ws.closed:
-            try:
+        # Try to send end signal
+        try:
+            if self.is_connected and self.ws and not self.ws.closed:
                 await self.stream_end()
-                # Brief delay to allow processing
-                await asyncio.sleep(0.5)
-            except:
-                pass
-                
+                await asyncio.sleep(0.5)  # Allow time for processing
+        except Exception as e:
+            logger.error(f"Error during stream end: {str(e)}")
+        
         # Clean up resources
         await self._cleanup()
         logger.info("Closed ElevenLabs WebSocket connection")
+        
         
     async def get_audio(self, timeout=5.0):
         """Get next audio chunk from queue with timeout"""
