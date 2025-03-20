@@ -58,7 +58,7 @@ class DeepgramSTTService:
                     "interim_transcripts": [],
                     "connection_in_progress": False,  # Add flag to track connection attempts
                     "session_params": {
-                        "model": "nova-3",
+                        "model": "nova-2",
                         "language": "en-US",
                         "smart_format": "true",
                         "interim_results": "true",
