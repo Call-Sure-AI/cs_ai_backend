@@ -146,15 +146,13 @@ class SpeechToTextService:
             # Build the URL with proper query parameters for mulaw audio
             params = {
                 "model": "nova-3",
-                "sample_rate": "8000",
-                "encoding": "mulaw-8k",  # Try this instead of "mulaw"
-                "channels": "1",
-                "punctuate": "true",
-                "smart_format": "true",
-                "filler_words": "false",
-                "endpointing": "true",
-                "detection_mode": "continuous", # Add this to continuously detect speech
-                "vad_sensitivity": "0.5"        # Add this to adjust voice activity detection
+                "sample_rate": 8000,
+                "encoding": "mulaw",  # Try this instead of "mulaw"
+                "channels": 1,
+                "punctuate": True,
+                "smart_format": True,
+                "filler_words": False,
+                "endpointing": True
             }
             
             # Construct the URL properly
