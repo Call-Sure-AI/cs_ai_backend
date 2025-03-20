@@ -74,6 +74,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_bytes):
             try:
+                logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
                 # Audio from ElevenLabs is already in μ-law format
                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
                 media_message = {
@@ -82,9 +83,10 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                     "media": {"payload": encoded_audio}
                 }
                 await ws.send_text(json.dumps(media_message))
+                logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
-        
+                
         # Create new TTS service for this response
         tts_service = WebSocketTTSService()
         

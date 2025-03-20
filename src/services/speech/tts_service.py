@@ -110,6 +110,7 @@ class WebSocketTTSService:
             
         try:
             logger.info("Starting ElevenLabs WebSocket audio listener")
+            audio_chunks_received = 0
             
             async for msg in self.ws:
                 if self.is_closed:
@@ -123,6 +124,10 @@ class WebSocketTTSService:
                         if "audio" in data:
                             # Decode base64 audio
                             audio_bytes = base64.b64decode(data["audio"])
+                            audio_chunks_received += 1
+                            
+                            if audio_chunks_received == 1:
+                                logger.info(f"Received first audio chunk from ElevenLabs: {len(audio_bytes)} bytes")
                             
                             # Put in queue if callback isn't set
                             if self.audio_callback:
@@ -132,10 +137,12 @@ class WebSocketTTSService:
                                     logger.error(f"Error in audio callback: {str(e)}")
                             else:
                                 await self.audio_queue.put(audio_bytes)
-                                
+                        # Log any error messages from ElevenLabs        
+                        elif "error" in data:
+                            logger.error(f"ElevenLabs API error: {data['error']}")
                         # Debug any other messages
                         else:
-                            logger.debug(f"ElevenLabs non-audio message: {data}")
+                            logger.info(f"ElevenLabs message: {data}")
                             
                     except json.JSONDecodeError:
                         logger.warning(f"Non-JSON response from ElevenLabs: {msg.data}")
@@ -148,6 +155,8 @@ class WebSocketTTSService:
                     logger.error(f"ElevenLabs WebSocket error: {msg.data}")
                     break
                     
+            logger.info(f"ElevenLabs listener finished, received {audio_chunks_received} audio chunks")
+            
         except asyncio.CancelledError:
             logger.info("ElevenLabs WebSocket listener task cancelled")
             
@@ -156,7 +165,8 @@ class WebSocketTTSService:
             
         finally:
             logger.info("ElevenLabs WebSocket audio listener stopped")
-    
+            
+            
     async def stream_text(self, text: str):
         """Stream text to ElevenLabs for TTS generation"""
         if not text or not text.strip():
