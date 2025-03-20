@@ -152,7 +152,7 @@ class RAGService:
             # Handle special system commands
             if question == "__SYSTEM_WELCOME__":
                 # Yield a friendly welcome message instead of querying the knowledge base
-                welcome_message = f"Hello! Welcome to Callsue AI. I'm your AI voice assistant. How may I help you today?"
+                welcome_message = f"Hello! Welcome to {company_name}. I'm your AI voice assistant. How may I help you today?"
                 
                 # Yield the message token by token to maintain streaming behavior
                 for token in welcome_message.split():

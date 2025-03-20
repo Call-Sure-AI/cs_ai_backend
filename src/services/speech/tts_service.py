@@ -107,13 +107,14 @@ class WebSocketTTSService:
                 return False
     
     async def _listen_for_audio(self):
-        """Listen for audio chunks from ElevenLabs"""
+        """Listen for audio chunks from ElevenLabs with improved error handling"""
         if not self.ws:
             return
             
         try:
             logger.info("Starting ElevenLabs WebSocket audio listener")
             audio_chunks_received = 0
+            start_time = time.time()
             
             async for msg in self.ws:
                 if self.is_closed:
@@ -130,7 +131,8 @@ class WebSocketTTSService:
                             audio_chunks_received += 1
                             
                             if audio_chunks_received == 1:
-                                logger.info(f"Received first audio chunk from ElevenLabs: {len(audio_bytes)} bytes")
+                                first_chunk_time = time.time() - start_time
+                                logger.info(f"Received first audio chunk from ElevenLabs: {len(audio_bytes)} bytes (latency: {first_chunk_time:.2f}s)")
                             
                             # Convert PCM 44.1kHz to μ-law 8kHz for Twilio
                             mulaw_audio = self._convert_to_mulaw(audio_bytes)
@@ -148,7 +150,7 @@ class WebSocketTTSService:
                             logger.error(f"ElevenLabs API error: {data['error']}")
                         # Debug any other messages
                         else:
-                            logger.info(f"ElevenLabs message: {data}")
+                            logger.debug(f"ElevenLabs message: {data}")
                             
                     except json.JSONDecodeError:
                         logger.warning(f"Non-JSON response from ElevenLabs: {msg.data}")
@@ -161,6 +163,9 @@ class WebSocketTTSService:
                     logger.error(f"ElevenLabs WebSocket error: {msg.data}")
                     break
                     
+            if audio_chunks_received == 0:
+                logger.warning("No audio chunks received from ElevenLabs - possibly an issue with the API call")
+                
             logger.info(f"ElevenLabs listener finished, received {audio_chunks_received} audio chunks")
             
         except asyncio.CancelledError:
@@ -171,6 +176,7 @@ class WebSocketTTSService:
             
         finally:
             logger.info("ElevenLabs WebSocket audio listener stopped")
+    
     
     def _convert_to_mulaw(self, pcm_audio_bytes):
         """
@@ -208,14 +214,29 @@ class WebSocketTTSService:
                 return False
         
         try:
-            # Create message
+            # Add punctuation if missing to improve speech generation
+            text = text.strip()
+            if text and not any(text.endswith(c) for c in ".!?"):
+                text = text + "."
+            
+            # Create message with additional parameters to ensure audio generation
             message = {
                 "text": text,
-                "try_trigger_generation": True
+                "try_trigger_generation": True,
+                "voice_settings": {
+                    "stability": 0.3,
+                    "similarity_boost": 0.5,
+                    "style": 0.0,
+                    "use_speaker_boost": True
+                }
             }
             
             # Send to WebSocket with timeout
+            logger.info(f"Sending text to ElevenLabs: '{text}'")
             await asyncio.wait_for(self.ws.send_json(message), timeout=5.0)
+            
+            # Wait a moment to ensure processing starts
+            await asyncio.sleep(0.1)
             return True
             
         except asyncio.TimeoutError:
