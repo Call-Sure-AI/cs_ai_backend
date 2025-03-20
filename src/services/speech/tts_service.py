@@ -75,8 +75,8 @@ class TextToSpeechService:
             
             # Default voice settings
             default_settings = {
-                "stability": 0.5,
-                "similarity_boost": 0.8,
+                "stability": 0.3,
+                "similarity_boost": 0.5,
                 "style": 0.0,  # Reduced style for faster generation
                 "use_speaker_boost": True
             }
@@ -212,65 +212,108 @@ class TextToSpeechService:
         except Exception as e:
             logger.error(f"Unexpected error in TTS streaming: {str(e)}", exc_info=True)
 
+    # async def convert_audio_for_twilio(self, audio_bytes: bytes) -> Optional[bytes]:
+    #     """
+    #     Convert generated audio to Twilio-compatible μ-law format.
+        
+    #     Args:
+    #         audio_bytes (bytes): Input audio bytes
+        
+    #     Returns:
+    #         Optional[bytes]: Converted audio bytes or None if conversion fails
+    #     """
+    #     try:
+    #         import subprocess
+    #         import tempfile
+            
+    #         # Create temporary input and output files
+    #         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file, \
+    #              tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
+                
+    #             input_file.write(audio_bytes)
+    #             input_file.flush()
+                
+    #             # FFmpeg command to convert to Twilio-compatible μ-law
+    #             ffmpeg_command = [
+    #                 'ffmpeg', 
+    #                 '-y',                   # Overwrite output file
+    #                 '-i', input_file.name,  # Input file
+    #                 '-ar', '8000',          # Set sample rate to 8kHz
+    #                 '-ac', '1',             # Mono channel
+    #                 '-acodec', 'pcm_mulaw', # μ-law encoding
+    #                 '-f', 'mulaw',          # μ-law format
+    #                 output_file.name        # Output file
+    #             ]
+                
+    #             # Run FFmpeg conversion
+    #             result = subprocess.run(
+    #                 ffmpeg_command, 
+    #                 capture_output=True, 
+    #                 text=True
+    #             )
+                
+    #             # Check conversion result
+    #             if result.returncode == 0:
+    #                 with open(output_file.name, 'rb') as f:
+    #                     converted_audio = f.read()
+                    
+    #                 logger.info(f"Audio conversion successful: {len(converted_audio)} bytes")
+    #                 return converted_audio
+    #             else:
+    #                 logger.error(f"FFmpeg conversion failed: {result.stderr}")
+    #                 return None
+        
+    #     except Exception as e:
+    #         logger.error(f"Error converting audio for Twilio: {str(e)}", exc_info=True)
+    #         return None
+    #     finally:
+    #         # Clean up temporary files
+    #         import os
+    #         for filename in [input_file.name, output_file.name]:
+    #             try:
+    #                 os.unlink(filename)
+    #             except:
+    #                 pass
+                
+                
+
     async def convert_audio_for_twilio(self, audio_bytes: bytes) -> Optional[bytes]:
         """
-        Convert generated audio to Twilio-compatible μ-law format.
-        
-        Args:
-            audio_bytes (bytes): Input audio bytes
-        
-        Returns:
-            Optional[bytes]: Converted audio bytes or None if conversion fails
+        Convert generated audio to Twilio-compatible μ-law format with optimized pipeline.
         """
         try:
             import subprocess
-            import tempfile
             
-            # Create temporary input and output files
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file, \
-                 tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
-                
-                input_file.write(audio_bytes)
-                input_file.flush()
-                
-                # FFmpeg command to convert to Twilio-compatible μ-law
-                ffmpeg_command = [
-                    'ffmpeg', 
-                    '-y',                   # Overwrite output file
-                    '-i', input_file.name,  # Input file
-                    '-ar', '8000',          # Set sample rate to 8kHz
-                    '-ac', '1',             # Mono channel
-                    '-acodec', 'pcm_mulaw', # μ-law encoding
-                    '-f', 'mulaw',          # μ-law format
-                    output_file.name        # Output file
-                ]
-                
-                # Run FFmpeg conversion
-                result = subprocess.run(
-                    ffmpeg_command, 
-                    capture_output=True, 
-                    text=True
-                )
-                
-                # Check conversion result
-                if result.returncode == 0:
-                    with open(output_file.name, 'rb') as f:
-                        converted_audio = f.read()
-                    
-                    logger.info(f"Audio conversion successful: {len(converted_audio)} bytes")
-                    return converted_audio
-                else:
-                    logger.error(f"FFmpeg conversion failed: {result.stderr}")
-                    return None
+            # FFmpeg command using pipes for faster I/O
+            ffmpeg_command = [
+                'ffmpeg', 
+                '-y',                   # Overwrite output
+                '-f', 'mp3',            # Input format
+                '-i', 'pipe:0',         # Read from stdin
+                '-ar', '8000',          # Set sample rate to 8kHz
+                '-ac', '1',             # Mono channel
+                '-acodec', 'pcm_mulaw', # μ-law encoding
+                '-f', 'mulaw',          # μ-law format
+                'pipe:1'                # Output to stdout
+            ]
+            
+            # Run FFmpeg with pipes
+            process = subprocess.run(
+                ffmpeg_command,
+                input=audio_bytes,      # Send MP3 to stdin
+                capture_output=True,    # Capture stdout
+                check=True
+            )
+            
+            converted_audio = process.stdout
+            
+            if converted_audio:
+                logger.info(f"Audio conversion successful: {len(converted_audio)} bytes")
+                return converted_audio
+            else:
+                logger.error("FFmpeg conversion produced no output")
+                return None
         
         except Exception as e:
             logger.error(f"Error converting audio for Twilio: {str(e)}", exc_info=True)
             return None
-        finally:
-            # Clean up temporary files
-            import os
-            for filename in [input_file.name, output_file.name]:
-                try:
-                    os.unlink(filename)
-                except:
-                    pass

@@ -23,7 +23,7 @@ class SpeechToTextService:
         self.deepgram_url = "https://api.deepgram.com/v1/listen"
         if not self.deepgram_api_key:
             logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
-        self.deepgram_api_key = "576fc98d7aa2edf6623c493ee540db34527ecc71"
+            self.deepgram_api_key = "576fc98d7aa2edf6623c493ee540db34527ecc71"
         
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                  callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
@@ -90,7 +90,9 @@ class SpeechToTextService:
                 "channels": "1",
                 "detect_language": "true",
                 "punctuate": "true",
-                "smart_format": "true"
+                "smart_format": "true",
+                "interim_results": "true",  # Get partial results
+                "vad_turnoff": "500"        # Stop VAD after 500ms of silence
             }
             
             # Construct the URL properly with urllib
