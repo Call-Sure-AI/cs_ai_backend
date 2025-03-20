@@ -768,10 +768,11 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
-                                logger.info(f"payload: {payload}")
+                                # logger.info(f"payload: {payload}")
                                 
                                 # Convert Twilio audio format for processing
                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
+                                logger.info(f"[{connection_id}] Received audio chunk: {len(audio_data)} bytes")
                                 if audio_data:
                                     # Process the audio
                                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)

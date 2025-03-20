@@ -264,22 +264,34 @@ class SpeechToTextService:
         
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes"""
+        """Convert Twilio's base64 audio format to raw bytes with enhanced logging"""
         try:
             # Decode base64 audio
             audio_data = base64.b64decode(base64_payload)
             
-            # Only log occasionally to avoid log spam
-            if self.active_sessions.get(session_id, {}).get("chunk_count", 0) % 100 == 0:
-                logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
+            # Detailed logging
+            logger.info(f"Converted audio for session {session_id}: "
+                        f"Base64 input length: {len(base64_payload)} chars, "
+                        f"Raw audio bytes: {len(audio_data)} bytes")
             
-            logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
+            # Optional: Log audio chunk details for debugging
+            if len(audio_data) > 0:
+                # Calculate basic audio characteristics
+                silence_level = 128  # μ-law silence reference
+                non_silent_bytes = sum(1 for b in audio_data if abs(b - silence_level) > 10)
+                silence_percentage = (len(audio_data) - non_silent_bytes) / len(audio_data) * 100
+                
+                logger.debug(f"Audio chunk details for {session_id}: "
+                            f"Total bytes: {len(audio_data)}, "
+                            f"Non-silent bytes: {non_silent_bytes}, "
+                            f"Silence: {silence_percentage:.2f}%")
+            
             return audio_data
             
         except Exception as e:
             logger.error(f"Error converting Twilio audio for session {session_id}: {str(e)}")
             return None
-
+    
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 0.8):
         """Check if there has been silence (no new audio) for a specified duration"""
         if session_id not in self.active_sessions:
