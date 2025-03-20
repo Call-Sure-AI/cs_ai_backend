@@ -28,13 +28,15 @@ class SpeechToTextService:
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                 callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
+        """Process audio chunks with intelligent buffering and transcription"""
         try:
-            # Buffer audio chunks
+            # Initialize session if not exists
             if session_id not in self.active_sessions:
                 self.active_sessions[session_id] = {
                     "buffer": bytearray(),
+                    "last_activity": time.time(),
                     "chunk_count": 0,
-                    "last_activity": time.time()
+                    "energy_levels": []
                 }
             
             session = self.active_sessions[session_id]
@@ -42,122 +44,116 @@ class SpeechToTextService:
             session["chunk_count"] += 1
             session["last_activity"] = time.time()
             
-            # Combine audio chunks for more robust transcription
-            MIN_BUFFER_SIZE = 2000  # Minimum bytes for transcription
-            MAX_BUFFER_SIZE = 10000  # Maximum buffer size
+            # Analyze audio energy
+            silence_level = 128
+            active_bytes = sum(1 for b in audio_data if abs(b - silence_level) > 10)
+            energy_percentage = (active_bytes / len(audio_data)) * 100
             
-            if len(session["buffer"]) >= MIN_BUFFER_SIZE and len(session["buffer"]) <= MAX_BUFFER_SIZE:
-                # Attempt transcription of accumulated buffer
-                text = await self._recognize_speech(bytes(session["buffer"]), session_id)
+            # Track energy levels
+            session["energy_levels"].append(energy_percentage)
+            if len(session["energy_levels"]) > 10:
+                session["energy_levels"].pop(0)
+            
+            # Determine if buffer should be processed
+            buffer_length = len(session["buffer"])
+            avg_energy = sum(session["energy_levels"]) / len(session["energy_levels"])
+            
+            # Process conditions:
+            # 1. Substantial buffer with consistent energy
+            # 2. Large buffer accumulation
+            # 3. Forced processing after timeout
+            should_process = (
+                buffer_length > 2000 and avg_energy > 10.0 or
+                buffer_length > 10000 or
+                (time.time() - session.get("last_process_time", 0) > 3.0 and buffer_length > 1000)
+            )
+            
+            if should_process:
+                # Prevent simultaneous processing
+                session["last_process_time"] = time.time()
                 
-                if text and callback:
-                    logger.info(f"Transcribed speech for {session_id}: '{text}'")
-                    await callback(session_id, text)
-                
-                # Clear buffer after processing
+                # Convert buffer to bytes and clear
+                buffer_bytes = bytes(session["buffer"])
                 session["buffer"].clear()
+                
+                # Transcribe
+                text = await self._recognize_speech(buffer_bytes, session_id)
+                
+                # Callback if text found
+                if text and callback:
+                    logger.info(f"Transcribed for {session_id}: '{text}'")
+                    await callback(session_id, text)
             
             return True
         
         except Exception as e:
             logger.error(f"Error processing audio chunk for {session_id}: {str(e)}")
             return False
-    
        
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
-        """Convert audio data to text using Deepgram"""
+        """Enhanced speech recognition with detailed logging"""
         try:
-            
-            if len(audio_data) > 1000:
-                # Save a sample of audio data to a file for analysis
-                sample_filename = f"/tmp/audio_sample_{session_id}_{int(time.time())}.mulaw"
-                try:
-                    with open(sample_filename, "wb") as f:
-                        f.write(audio_data[:min(10000, len(audio_data))])
-                    logger.info(f"Saved audio sample to {sample_filename}")
-                except Exception as e:
-                    logger.error(f"Failed to save audio sample: {e}")
-            
-            # Deepgram API requires specific headers with Token format
+            # Enhanced Deepgram API configuration
             headers = {
                 "Authorization": f"Token {self.deepgram_api_key}",
                 "Content-Type": "audio/x-mulaw",
             }
             
-            # Build the URL with proper query parameters for mulaw audio
-            # params = {
-            #     "model": "nova-3",
-            #     "sample_rate": 8000,
-            #     "encoding": "mulaw",  # Try this instead of "mulaw"
-            #     "channels": 1,
-            #     "punctuate": True,
-            #     "smart_format": True,
-            #     "filler_words": False,
-            #     "endpointing": True
-            # }
+            url = (
+                f"{self.deepgram_url}?"
+                "model=nova-3&"
+                "sample_rate=8000&"
+                "encoding=mulaw&"
+                "channels=1&"
+                "punctuate=true&"
+                "smart_format=true&"
+                "filler_words=false&"
+                "endpointing=true"
+            )
             
-            # # Construct the URL properly
-            # from urllib.parse import urlencode
-            # query_string = urlencode(params)
-            # url = f"{self.deepgram_url}?{query_string}"
+            # Log audio characteristics
+            logger.info(f"Transcription attempt for {session_id}: {len(audio_data)} bytes")
             
-            # # Log the request
-            # logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram for session {session_id}")
-            
-            url = f"{self.deepgram_url}?model=nova-3&sample_rate=8000&encoding=mulaw&channels=1"
-        
-            # Log the request
-            logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram URL: {url}")
-        
-            
-            
-            # Make the API request to Deepgram
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url,
                     headers=headers,
                     data=audio_data,
-                    timeout=10  # 10 second timeout
+                    timeout=10
                 ) as response:
+                    # Comprehensive error handling
                     if response.status != 200:
                         error_text = await response.text()
-                        logger.error(f"Deepgram API error: {response.status} - {error_text}")
+                        logger.error(f"Deepgram API error {response.status}: {error_text}")
                         return None
-                        
-                    # Parse the JSON response
+                    
                     result = await response.json()
                     
-                    # Log the full response for debugging
-                    logger.info(f"Deepgram full response: {json.dumps(result)}")
+                    # Detailed logging of Deepgram response
+                    logger.info(f"Deepgram response for {session_id}: {json.dumps(result, indent=2)}")
                     
-                    if result and "results" in result:
-                        # Check if results contains useful diagnostic info
-                        if "warnings" in result:
-                            logger.warning(f"Deepgram warnings: {result['warnings']}")
-                    
-                    # Extract the transcript from the response
-                    if result and "results" in result and "channels" in result["results"]:
-                        channel = result["results"]["channels"][0]
-                        if "alternatives" in channel and len(channel["alternatives"]) > 0:
-                            transcript = channel["alternatives"][0].get("transcript", "")
+                    # Robust transcript extraction
+                    try:
+                        channel = result.get("results", {}).get("channels", [{}])[0]
+                        alternatives = channel.get("alternatives", [])
+                        
+                        if alternatives:
+                            transcript = alternatives[0].get("transcript", "").strip()
+                            confidence = alternatives[0].get("confidence", 0.0)
                             
-                            if transcript:
-                                logger.info(f"Deepgram recognized: '{transcript}' for session {session_id}")
+                            if transcript and confidence > 0.5:
+                                logger.info(f"Valid transcript for {session_id}: '{transcript}' (confidence: {confidence})")
                                 return transcript
-                            else:
-                                logger.info(f"No speech detected for session {session_id}")
-                                return None
-            
-            logger.warning(f"Could not extract transcript from Deepgram response for session {session_id}")
-            return None
-            
-        except aiohttp.ClientError as e:
-            logger.error(f"Deepgram API request error for session {session_id}: {str(e)}")
-            return None
+                    except Exception as extract_err:
+                        logger.error(f"Transcript extraction error: {extract_err}")
+                    
+                    logger.warning(f"No valid speech detected for {session_id}")
+                    return None
+        
         except Exception as e:
-            logger.error(f"Error recognizing speech for session {session_id}: {str(e)}", exc_info=True)
+            logger.error(f"Speech recognition error for {session_id}: {str(e)}")
             return None
-            
+           
     def close_session(self, session_id: str):
         """Close a speech recognition session"""
         if session_id in self.active_sessions:
@@ -205,25 +201,38 @@ class SpeechToTextService:
         
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes with enhanced logging and processing"""
+        """Convert Twilio's base64 audio format to raw bytes with robust audio analysis"""
         try:
             # Decode base64 audio
             audio_data = base64.b64decode(base64_payload)
             
-            # Enhanced logging with audio characteristics
-            total_non_silence_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
-            silence_percentage = (len(audio_data) - total_non_silence_bytes) / len(audio_data) * 100
+            # Detailed energy calculation for μ-law audio
+            silence_level = 128  # μ-law silence reference
+            non_silent_bytes = [abs(b - silence_level) for b in audio_data]
             
+            # More nuanced silence detection
+            threshold = 10  # Adjust this value to fine-tune silence detection
+            active_bytes = [b for b in non_silent_bytes if b > threshold]
+            
+            # Calculate energy metrics
+            total_bytes = len(audio_data)
+            active_count = len(active_bytes)
+            silence_percentage = (total_bytes - active_count) / total_bytes * 100
+            max_energy = max(non_silent_bytes) if non_silent_bytes else 0
+            
+            # Enhanced logging
             logger.info(
                 f"Audio Conversion Details for {session_id}: "
                 f"Base64 Input: {len(base64_payload)} chars, "
-                f"Raw Bytes: {len(audio_data)}, "
-                f"Non-Silence Bytes: {total_non_silence_bytes}, "
+                f"Raw Bytes: {total_bytes}, "
+                f"Active Bytes: {active_count}, "
+                f"Max Energy: {max_energy}, "
                 f"Silence: {silence_percentage:.2f}%"
             )
             
-            # Return audio data only if it contains meaningful signal
-            if total_non_silence_bytes > len(audio_data) * 0.1:  # At least 10% non-silence
+            # More sophisticated filtering
+            # Only return audio with meaningful signal
+            if active_count / total_bytes > 0.1:  # At least 10% active signal
                 return audio_data
             
             return None
@@ -231,7 +240,6 @@ class SpeechToTextService:
         except Exception as e:
             logger.error(f"Audio conversion error for {session_id}: {str(e)}")
             return None
-    
     
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 0.8):
         """Check if there has been silence (no new audio) for a specified duration"""
