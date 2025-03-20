@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+import random
 from typing import Optional, Callable, Dict, Any, List, AsyncGenerator
 
 import aiohttp
@@ -266,10 +267,16 @@ class DeepgramSTTService:
                 asyncio.create_task(self._maintain_connection(session_id))
     
     async def _handle_text_message(self, session_id: str, message_data: str):
-        """Handle text messages from Deepgram WebSocket"""
+        """Handle text messages from Deepgram WebSocket with enhanced logging"""
         try:
             data = json.loads(message_data)
             message_type = data.get("type")
+            
+            # Log raw message for debugging (limiting to keep logs manageable)
+            if message_type not in ["Results"]:  # Don't log frequent Results messages
+                logger.info(f"Deepgram message for session {session_id}: {message_type}")
+            elif random.random() < 0.1:  # Log ~10% of Results messages
+                logger.info(f"Sample Deepgram Results for session {session_id}")
             
             # Update last activity time
             if session_id in self.last_activity_times:
@@ -285,19 +292,64 @@ class DeepgramSTTService:
                 await self._handle_utterance_end(session_id, data)
                 
             elif message_type == "Metadata":
-                logger.debug(f"Received metadata for session {session_id}: {data}")
+                logger.info(f"Received metadata for session {session_id}: {data}")
                 
             else:
-                logger.debug(f"Received unknown message type for session {session_id}: {message_type}")
+                logger.info(f"Received message type for session {session_id}: {message_type}")
                 
         except json.JSONDecodeError:
             logger.warning(f"Received invalid JSON for session {session_id}")
             
         except Exception as e:
             logger.error(f"Error handling message for session {session_id}: {str(e)}")
+
+    async def check_audio_levels(self, session_id: str, threshold: float = 5.0, window_size: int = 20):
+        """
+        Check audio levels and report if they're consistently low
+        
+        Args:
+            session_id: The session ID to check
+            threshold: The percentage of non-silence to consider as "active" audio
+            window_size: Number of samples to consider for the check
+        """
+        if session_id not in self.active_sessions:
+            return
+            
+        # Initialize or get the audio level history for this session
+        if not hasattr(self, 'audio_level_history'):
+            self.audio_level_history = {}
+        
+        if session_id not in self.audio_level_history:
+            self.audio_level_history[session_id] = []
+        
+        history = self.audio_level_history[session_id]
+        
+        # If we don't have enough history, return early
+        if len(history) < window_size:
+            return
+        
+        # Calculate average non-silence percentage
+        avg_level = sum(history) / len(history)
+        
+        # Check if average is below threshold
+        if avg_level < threshold:
+            logger.warning(f"Low audio levels detected for session {session_id}: {avg_level:.2f}% (threshold: {threshold}%)")
+            
+            # If levels are really low, log a more severe warning
+            if avg_level < 1.0:
+                logger.error(f"CRITICAL: Almost no audio input detected for session {session_id}. "
+                        f"Please check microphone and audio settings!")
+        else:
+            logger.info(f"Audio levels for session {session_id} look good: {avg_level:.2f}%")
+        
+        # Reset history after check
+        self.audio_level_history[session_id] = []
+
+
+    
     
     async def _handle_results(self, session_id: str, data):
-        """Handle transcription results from Deepgram"""
+        """Handle transcription results from Deepgram with enhanced logging"""
         if session_id not in self.active_sessions:
             return
             
@@ -309,9 +361,9 @@ class DeepgramSTTService:
                 is_final = data.get("is_final", False)
                 speech_final = data.get("speech_final", False)
                 
-                # Only process non-empty transcripts
+                # Always log when we receive any transcript
                 if transcript:
-                    logger.debug(f"Session {session_id} received transcript: '{transcript}' (final: {is_final}, speech_final: {speech_final})")
+                    logger.info(f"Session {session_id} received transcript: '{transcript}' (final: {is_final}, speech_final: {speech_final})")
                     
                     session = self.active_sessions[session_id]
                     
@@ -332,10 +384,12 @@ class DeepgramSTTService:
                         callback = session.get("transcription_callback")
                         if callback:
                             await callback(session_id, "")
+            elif random.random() < 0.01:  # Log occasional empty results
+                logger.debug(f"Empty transcript received for session {session_id}")
                 
         except Exception as e:
             logger.error(f"Error handling results for session {session_id}: {str(e)}")
-    
+            
     async def _handle_speech_started(self, session_id: str, data):
         """Handle speech started events from Deepgram"""
         if session_id not in self.active_sessions:
@@ -578,18 +632,44 @@ class DeepgramSTTService:
         
         return (current_time - last_activity) >= threshold
     
+    
+    
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes"""
+        """Convert Twilio's base64 audio format to raw bytes with audio level tracking"""
         if not base64_payload:
+            logger.warning(f"Empty payload received for session {session_id}")
             return None
             
         try:
             # Decode base64 audio - Twilio's audio is μ-law format at 8kHz
             audio_data = base64.b64decode(base64_payload)
             
-            # Only log for large chunks to reduce log volume
-            if len(audio_data) > 1000:
-                logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
+            # Always log very small payloads as they might indicate issues
+            if len(audio_data) < 100:
+                logger.warning(f"Very small audio chunk ({len(audio_data)} bytes) for session {session_id}")
+            
+            # Analyze audio content and track levels
+            non_silence = sum(1 for b in audio_data if b != 128)
+            percentage = (non_silence / len(audio_data)) * 100
+            
+            # Initialize audio level history if needed
+            if not hasattr(self, 'audio_level_history'):
+                self.audio_level_history = {}
+            
+            if session_id not in self.audio_level_history:
+                self.audio_level_history[session_id] = []
+            
+            # Add to history
+            self.audio_level_history[session_id].append(percentage)
+            
+            # Check levels periodically
+            if random.random() < 0.01:  # ~1% of packets
+                asyncio.create_task(self.check_audio_levels(session_id))
+                
+            # Log analysis occasionally
+            if random.random() < 0.01:  # Log approximately 1% of chunks
+                logger.info(f"Audio analysis for session {session_id}: "
+                        f"{len(audio_data)} bytes, non-silence: {percentage:.2f}%")
                 
             return audio_data
             

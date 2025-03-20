@@ -468,7 +468,8 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     silence_threshold = 1.5
     welcome_sent = False
     
-    # Remove all barge-in related variables
+    # Initialize status reporting time
+    stt_service.last_status_report_time = time.time()
 
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
@@ -559,6 +560,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             # If we get here, we have actual transcribed text from initial processing
             # Update timing info
             last_processed_time = time.time()
+            logger.info(f"[{connection_id}] Received transcription: '{transcribed_text}'")
         
         # Main processing loop
         while not websocket_closed:
@@ -587,9 +589,6 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                         if data['event'] == 'mark':
                             mark_name = data.get('mark', {}).get('name', '')
                             logger.info(f"[TWILIO_MARK] Received mark response: {mark_name} - Audio playback confirmed!")
-                        
-                        # Log all incoming Twilio events
-                        # logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
                         
                         # Log full message for important events
                         if event in ['connected', 'start', 'stop', 'mark']:
@@ -640,11 +639,29 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
                                 
-                                # Remove barge-in detection logic
+                                # Debug log every 100th audio chunk to avoid flooding logs
+                                if audio_chunks % 100 == 0:
+                                    try:
+                                        audio_bytes = base64.b64decode(payload)
+                                        # Count non-silence bytes (μ-law silence is typically 128)
+                                        non_silence = sum(1 for b in audio_bytes if b != 128)
+                                        percentage = (non_silence / len(audio_bytes)) * 100
+                                        logger.info(f"[{connection_id}] Audio chunk {audio_chunks}: {len(audio_bytes)} bytes, "
+                                                  f"non-silence: {percentage:.2f}%, payload length: {len(payload)}")
+                                    except Exception as e:
+                                        logger.error(f"[{connection_id}] Error analyzing audio: {str(e)}")
+                                
                                 # Process audio normally
                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
                                 if audio_data:
-                                    await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
+                                    # Log statistics for audio sent to Deepgram
+                                    if audio_chunks % 100 == 0:
+                                        logger.info(f"[{connection_id}] Sending {len(audio_data)} bytes to Deepgram")
+                                        
+                                    result = await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
+                                    if audio_chunks % 100 == 0:
+                                        logger.info(f"[{connection_id}] Deepgram process result: {result}")
+                                        
                                     audio_chunks += 1
                                     
                         elif event == 'stop':
@@ -656,12 +673,39 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     except json.JSONDecodeError:
                         logger.warning(f"[{connection_id}] Non-JSON text received")
                 
+                # Add periodic status reporting
+                current_time = time.time()
+                if hasattr(stt_service, 'last_status_report_time'):
+                    time_since_report = current_time - stt_service.last_status_report_time
+                else:
+                    time_since_report = float('inf')
+                    stt_service.last_status_report_time = current_time
+                    
+                # Report status every 5 seconds
+                if time_since_report > 5:
+                    is_speech_active = await stt_service.is_speech_active(client_id)
+                    is_silent = await stt_service.detect_silence(client_id, silence_threshold)
+                    
+                    logger.info(f"[{connection_id}] Status: speech_active={is_speech_active}, " 
+                              f"silence_detected={is_silent}, processing={is_processing}, "
+                              f"audio_chunks={audio_chunks}")
+                    
+                    # Get audio level history info if available
+                    if hasattr(stt_service, 'audio_level_history') and client_id in stt_service.audio_level_history:
+                        history = stt_service.audio_level_history[client_id]
+                        if history:
+                            avg_level = sum(history) / len(history)
+                            logger.info(f"[{connection_id}] Average audio level: {avg_level:.2f}% "
+                                     f"(over {len(history)} samples)")
+                            
+                    stt_service.last_status_report_time = current_time
+                
                 # Check for silence
                 if not is_processing and await stt_service.detect_silence(client_id, silence_threshold):
                     await handle_transcription(client_id, "")
 
             except asyncio.TimeoutError:
-                # (Heartbeat logic, if any, goes here.)
+                # Heartbeat check
                 pass
             except Exception as e:
                 logger.error(f"[{connection_id}] Error processing message: {str(e)}")
@@ -685,7 +729,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
             except Exception as e:
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-                 
+                    
         
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
 async def signaling_endpoint(
