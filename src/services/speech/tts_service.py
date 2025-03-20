@@ -1,4 +1,4 @@
-# In services/speech/tts_service.py
+# Add this class to tts_service.py
 
 import aiohttp
 import asyncio
@@ -21,6 +21,7 @@ class WebSocketTTSService:
         self.audio_callback = None
         self.is_ready = False
         self.pending_audio = []
+        self.session = None
         
         # Validate configuration
         if not self.api_key:
@@ -34,8 +35,7 @@ class WebSocketTTSService:
             audio_callback: Optional callback to receive audio chunks as they arrive
         """
         if self.ws is not None:
-            await self.ws.close()
-            self.ws = None
+            await self.close()
             
         self.audio_callback = audio_callback
         self.is_ready = False
@@ -58,9 +58,9 @@ class WebSocketTTSService:
             logger.info(f"Connecting to ElevenLabs WebSocket at {full_url}")
             
             # Connect to WebSocket
-            session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession()
             headers = {"xi-api-key": self.api_key}
-            self.ws = await session.ws_connect(full_url, headers=headers)
+            self.ws = await self.session.ws_connect(full_url, headers=headers)
             
             # Start listening for audio chunks
             asyncio.create_task(self._listen_for_audio())
@@ -159,6 +159,9 @@ class WebSocketTTSService:
             finally:
                 self.ws = None
                 self.is_ready = False
+                if self.session:
+                    await self.session.close()
+                    self.session = None
                 logger.info("Closed ElevenLabs WebSocket connection")
     
     async def get_pending_audio(self):

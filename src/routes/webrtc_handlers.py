@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Initialize services
 vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
-tts_service = WebSocketTTSService()
+ws_tts_service = WebSocketTTSService()
 
 import asyncio
 import subprocess
@@ -43,6 +43,10 @@ import tempfile
 
 
 async def process_buffered_message(manager, client_id, msg_data, app):
+    # Define speaking variables at the beginning of the function
+    should_stop_speaking = asyncio.Event()
+    is_system_speaking = True
+    
     try:
         ws = manager.active_connections.get(client_id)
         if not ws or manager.websocket_is_closed(ws):
@@ -60,14 +64,13 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.error(f"Missing resources in agent for client {client_id}")
             return
 
-        # Create a stop event for barge-in
-        nonlocal should_stop_speaking, is_system_speaking
-        should_stop_speaking = asyncio.Event()
-        is_system_speaking = True
+        # Get the stream SID
+        stream_sid = app.state.stream_sids.get(client_id, "")
+        if not stream_sid:
+            logger.error(f"No stream SID found for client {client_id}")
+            return
         
         # Initialize WebSocket TTS service
-        
-        stream_sid = app.state.stream_sids.get(client_id, "")
         
         # Define callback to send audio directly to Twilio
         async def send_audio_to_twilio(audio_bytes):
@@ -87,7 +90,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
         
         # Connect to ElevenLabs with the callback
-        await tts_service.connect(send_audio_to_twilio)
+        await ws_tts_service.connect(send_audio_to_twilio)
         
         # Start sentence with empty string to initialize generation
         current_sentence = ""
@@ -104,7 +107,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             # Check if we should stop due to barge-in
             if should_stop_speaking.is_set():
                 logger.info("Stopping text generation due to user barge-in")
-                await tts_service.close()
+                await ws_tts_service.close()
                 break
                 
             # Add token to text
@@ -130,7 +133,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             
             if is_chunk_boundary:
                 # Stream the accumulated text to ElevenLabs
-                await tts_service.stream_text(current_sentence, trigger_gen=True)
+                await ws_tts_service.stream_text(current_sentence, trigger_gen=True)
                 current_sentence = ""
                 buffer_size = 0
                 last_chunk_time = current_time
@@ -140,15 +143,15 @@ async def process_buffered_message(manager, client_id, msg_data, app):
 
         # Send any remaining text
         if current_sentence and not should_stop_speaking.is_set():
-            await tts_service.stream_text(current_sentence, trigger_gen=True)
+            await ws_tts_service.stream_text(current_sentence, trigger_gen=True)
             
         # Send empty text to signal end of generation
         if not should_stop_speaking.is_set():
             await asyncio.sleep(0.5)  # Allow final audio to generate
-            await tts_service.stream_text("", trigger_gen=False)
+            await ws_tts_service.stream_text("", trigger_gen=False)
         
         # Close the WebSocket connection
-        await tts_service.close()
+        await ws_tts_service.close()
         
         # Reset speaking flag
         is_system_speaking = False
@@ -159,6 +162,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
     except Exception as e:
         logger.error(f"Buffered message processing error: {str(e)}")
         is_system_speaking = False
+        await ws_tts_service.close() if 'ws_tts_service' in locals() else None
         raise
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
@@ -173,6 +177,58 @@ async def process_message_with_retries(manager, cid, msg_data, app, max_retries=
             logger.error(f"[{cid}] Error processing message (retry {retries}): {str(e)}")
             await asyncio.sleep(0.5)
     return
+
+
+async def send_welcome_message_with_ws(client_id, app, websocket):
+    """Send welcome message using WebSocket TTS"""
+    try:
+        stream_sid = app.state.stream_sids.get(client_id, "")
+        if not stream_sid:
+            logger.error(f"No stream SID found for client {client_id}")
+            return False
+        
+        
+        # Define callback to send audio directly to Twilio
+        async def send_audio_to_twilio(audio_bytes):
+            try:
+                # Audio is already in μ-law format
+                encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                media_message = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": encoded_audio}
+                }
+                await websocket.send_text(json.dumps(media_message))
+            except Exception as e:
+                logger.error(f"Error sending welcome audio to Twilio: {str(e)}")
+        
+        # Connect to ElevenLabs with the callback
+        await ws_tts_service.connect(send_audio_to_twilio)
+        
+        # Split welcome into chunks for better streaming
+        welcome_chunks = [
+            "Hello! ",
+            "Welcome to Callsure AI. ",
+            "How can I help you today?"
+        ]
+        
+        for chunk in welcome_chunks:
+            await ws_tts_service.stream_text(chunk, trigger_gen=True)
+            await asyncio.sleep(0.1)  # Small delay between chunks
+        
+        # Send empty text to signal end
+        await asyncio.sleep(0.5)  # Allow final audio to generate
+        await ws_tts_service.stream_text("", trigger_gen=False)
+        
+        # Close connection
+        await ws_tts_service.close()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error sending welcome message: {str(e)}")
+        return False
+
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
     """Handler for Twilio Media Streams within the WebRTC signaling endpoint."""
@@ -266,7 +322,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
 
         # Define transcription handler (capture app via nonlocal)
         async def handle_transcription(session_id, transcribed_text):
-            nonlocal is_processing, last_processed_time, last_speech_time, user_speech_buffer
+            nonlocal is_processing, last_processed_time, app, last_speech_time, user_speech_buffer, is_system_speaking
             
             # Update speech timing
             last_speech_time = time.time()
@@ -280,6 +336,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                 # If system is speaking, stop it to handle barge-in
                 if is_system_speaking:
                     should_stop_speaking.set()
+                    is_system_speaking = False
                     logger.info(f"[{connection_id}] User barge-in detected - stopping system speech")
                 
                 # Don't process immediately - wait for silence
@@ -385,6 +442,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             if not welcome_sent:
                                 welcome_data = {"type": "message", "message": "__SYSTEM_WELCOME__", "source": "twilio"}
                                 await process_buffered_message(connection_manager, client_id, welcome_data, app)
+                                is_system_speaking = False
                                 welcome_sent = True
 
                         
