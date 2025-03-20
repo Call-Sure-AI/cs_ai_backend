@@ -273,6 +273,7 @@ class SpeechToTextService:
             if self.active_sessions.get(session_id, {}).get("chunk_count", 0) % 100 == 0:
                 logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
             
+            logger.debug(f"Converted {len(base64_payload)} chars of base64 to {len(audio_data)} bytes for session {session_id}")
             return audio_data
             
         except Exception as e:
