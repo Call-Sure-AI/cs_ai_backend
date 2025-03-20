@@ -144,24 +144,31 @@ class SpeechToTextService:
             }
             
             # Build the URL with proper query parameters for mulaw audio
-            params = {
-                "model": "nova-3",
-                "sample_rate": 8000,
-                "encoding": "mulaw",  # Try this instead of "mulaw"
-                "channels": 1,
-                "punctuate": True,
-                "smart_format": True,
-                "filler_words": False,
-                "endpointing": True
-            }
+            # params = {
+            #     "model": "nova-3",
+            #     "sample_rate": 8000,
+            #     "encoding": "mulaw",  # Try this instead of "mulaw"
+            #     "channels": 1,
+            #     "punctuate": True,
+            #     "smart_format": True,
+            #     "filler_words": False,
+            #     "endpointing": True
+            # }
             
-            # Construct the URL properly
-            from urllib.parse import urlencode
-            query_string = urlencode(params)
-            url = f"{self.deepgram_url}?{query_string}"
+            # # Construct the URL properly
+            # from urllib.parse import urlencode
+            # query_string = urlencode(params)
+            # url = f"{self.deepgram_url}?{query_string}"
             
+            # # Log the request
+            # logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram for session {session_id}")
+            
+            url = f"{self.deepgram_url}?model=nova-3&sample_rate=8000&encoding=mulaw&channels=1"
+        
             # Log the request
-            logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram for session {session_id}")
+            logger.info(f"Sending {len(audio_data)} bytes of audio to Deepgram URL: {url}")
+        
+            
             
             # Make the API request to Deepgram
             async with aiohttp.ClientSession() as session:
