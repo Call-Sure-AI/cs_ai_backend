@@ -28,22 +28,14 @@ class WebSocketTTSService:
         self.connection_lock = asyncio.Lock()
         self.audio_queue = asyncio.Queue()
         self.listener_task = None
+        self.has_sent_initial_message = False
         
         # Validate configuration
         if not self.api_key:
             logger.warning("ElevenLabs API key is not set. TTS services will not work.")
             
-    async def __aenter__(self):
-        await self.connect()
-        return self
-        
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-    
     async def connect(self, audio_callback: Callable[[bytes], Any] = None):
-        """
-        Connect to ElevenLabs WebSocket API
-        """
+        """Connect to ElevenLabs WebSocket API following their protocol"""
         async with self.connection_lock:
             # Reset state
             if self.is_connected:
@@ -51,14 +43,15 @@ class WebSocketTTSService:
                 
             self.audio_callback = audio_callback
             self.is_closed = False
+            self.has_sent_initial_message = False
             
             try:
                 # Construct WebSocket URL with parameters
                 url = f"{self.base_url}/{self.voice_id}/stream-input"
                 params = {
-                    "model_id": "eleven_turbo_v2",  # Use turbo model
-                    "output_format": "pcm_44100",   # Use PCM format (supported by ElevenLabs)
-                    "optimize_streaming_latency": "3",  # Max optimization
+                    "model_id": "eleven_turbo_v2",
+                    "output_format": "pcm_44100",
+                    "optimize_streaming_latency": "3",
                 }
                 
                 # Add query params to URL
@@ -75,27 +68,25 @@ class WebSocketTTSService:
                 self.ws = await self.session.ws_connect(
                     full_url, 
                     headers=headers,
-                    heartbeat=30.0,  # Keep the connection alive with heartbeats
-                    receive_timeout=60.0  # Longer timeout
+                    heartbeat=30.0,
+                    receive_timeout=60.0
                 )
                 
                 # Start listener task
                 self.listener_task = asyncio.create_task(self._listen_for_audio())
                 
-                # Initialize connection with empty text
-                voice_settings = {
-                    "stability": 0.3,  # Lower for faster responses
-                    "similarity_boost": 0.5,  # Lower for faster responses 
-                    "speed": 1.1,  # Slightly faster speech for quicker responses
+                # Send initial message as per documentation - MUST send space first
+                initial_message = {
+                    "text": " ",  # Must be a space!
+                    "voice_settings": {
+                        "stability": 0.3,
+                        "similarity_boost": 0.5,
+                        "speed": 1.1  # Slightly faster for better responsiveness
+                    }
                 }
                 
-                # Send initial message
-                init_message = {
-                    "text": " ",  # Required initial space
-                    "voice_settings": voice_settings
-                }
-                
-                await self.ws.send_json(init_message)
+                await self.ws.send_json(initial_message)
+                self.has_sent_initial_message = True
                 self.is_connected = True
                 logger.info("Connected to ElevenLabs WebSocket API")
                 
@@ -107,7 +98,7 @@ class WebSocketTTSService:
                 return False
     
     async def _listen_for_audio(self):
-        """Listen for audio chunks from ElevenLabs with improved error handling"""
+        """Listen for audio chunks from ElevenLabs"""
         if not self.ws:
             return
             
@@ -124,6 +115,11 @@ class WebSocketTTSService:
                     try:
                         data = json.loads(msg.data)
                         
+                        # Check if there's an error message
+                        if "error" in data:
+                            logger.error(f"ElevenLabs API error: {data['error']}")
+                            continue
+                            
                         # Check if this is an audio chunk
                         if "audio" in data:
                             # Decode base64 audio
@@ -137,7 +133,7 @@ class WebSocketTTSService:
                             # Convert PCM 44.1kHz to μ-law 8kHz for Twilio
                             mulaw_audio = self._convert_to_mulaw(audio_bytes)
                             
-                            # Put in queue if callback isn't set
+                            # Use callback if provided or put in queue
                             if self.audio_callback:
                                 try:
                                     await self.audio_callback(mulaw_audio)
@@ -145,11 +141,9 @@ class WebSocketTTSService:
                                     logger.error(f"Error in audio callback: {str(e)}")
                             else:
                                 await self.audio_queue.put(mulaw_audio)
-                        # Log any error messages from ElevenLabs        
-                        elif "error" in data:
-                            logger.error(f"ElevenLabs API error: {data['error']}")
-                        # Debug any other messages
-                        else:
+                        
+                        # Debug any other messages if not audio or error
+                        elif not "error" in data:
                             logger.debug(f"ElevenLabs message: {data}")
                             
                     except json.JSONDecodeError:
@@ -177,12 +171,8 @@ class WebSocketTTSService:
         finally:
             logger.info("ElevenLabs WebSocket audio listener stopped")
     
-    
     def _convert_to_mulaw(self, pcm_audio_bytes):
-        """
-        Convert PCM audio (44.1kHz, 16-bit, mono) to μ-law encoded audio (8kHz, 8-bit, mono)
-        for Twilio compatibility
-        """
+        """Convert PCM audio (44.1kHz, 16-bit, mono) to μ-law encoded audio (8kHz, 8-bit, mono)"""
         try:
             # Convert PCM audio to 8kHz sampling rate
             # First, assume the input is 16-bit PCM at 44.1kHz
@@ -200,7 +190,7 @@ class WebSocketTTSService:
             return pcm_audio_bytes
             
     async def stream_text(self, text: str):
-        """Stream text to ElevenLabs for TTS generation"""
+        """Stream text to ElevenLabs for TTS generation according to their protocol"""
         if not text or not text.strip():
             logger.debug("Empty text provided, skipping TTS generation")
             return True  # Consider empty text as success
@@ -212,6 +202,11 @@ class WebSocketTTSService:
             if not success:
                 logger.error("Failed to reconnect to ElevenLabs")
                 return False
+                
+        # Make sure we've sent the initial message
+        if not self.has_sent_initial_message:
+            logger.error("Cannot stream text before initial message is sent")
+            return False
         
         try:
             # Add punctuation if missing to improve speech generation
@@ -219,16 +214,10 @@ class WebSocketTTSService:
             if text and not any(text.endswith(c) for c in ".!?"):
                 text = text + "."
             
-            # Create message with additional parameters to ensure audio generation
+            # Create message with try_trigger_generation flag as per documentation
             message = {
                 "text": text,
-                "try_trigger_generation": True,
-                "voice_settings": {
-                    "stability": 0.3,
-                    "similarity_boost": 0.5,
-                    "style": 0.0,
-                    "use_speaker_boost": True
-                }
+                "try_trigger_generation": True
             }
             
             # Send to WebSocket with timeout
@@ -248,6 +237,27 @@ class WebSocketTTSService:
             self.is_connected = False
             return False
         
+    async def stream_end(self):
+        """Signal end of stream with empty text"""
+        if not self.is_connected:
+            return False
+            
+        try:
+            # Check if websocket is still open before sending
+            if self.ws and not self.ws.closed:
+                # Send empty text message to signal end as per documentation
+                end_message = {"text": ""}
+                await self.ws.send_json(end_message)
+                return True
+            else:
+                logger.info("WebSocket already closed, skipping end signal")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending end signal to ElevenLabs: {str(e)}")
+            self.is_connected = False
+            return False
+            
     async def _cleanup(self):
         """Clean up resources"""
         self.is_connected = False
@@ -297,38 +307,3 @@ class WebSocketTTSService:
         # Clean up resources
         await self._cleanup()
         logger.info("Closed ElevenLabs WebSocket connection")
-        
-    async def get_audio(self, timeout=5.0):
-        """Get next audio chunk from queue with timeout"""
-        try:
-            return await asyncio.wait_for(self.audio_queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
-            
-    async def get_all_audio(self):
-        """Get all available audio in queue"""
-        chunks = []
-        while not self.audio_queue.empty():
-            chunks.append(await self.audio_queue.get())
-        return b''.join(chunks)
-
-    async def stream_end(self):
-        """Signal end of stream with empty text"""
-        if not self.is_connected:
-            return False
-            
-        try:
-            # Check if websocket is still open before sending
-            if self.ws and not self.ws.closed:
-                # Send empty message to signal end
-                end_message = {"text": ""}
-                await self.ws.send_json(end_message)
-                return True
-            else:
-                logger.info("WebSocket already closed, skipping end signal")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error sending end signal to ElevenLabs: {str(e)}")
-            self.is_connected = False
-            return False

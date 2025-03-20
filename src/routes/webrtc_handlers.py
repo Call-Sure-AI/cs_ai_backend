@@ -199,8 +199,8 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 
                 send_audio_to_twilio.chunk_count += 1
                 
-                if send_audio_to_twilio.chunk_count == 1 or send_audio_to_twilio.chunk_count % 5 == 0:
-                    logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
+                if send_audio_to_twilio.chunk_count == 1:
+                    logger.info(f"Received first audio chunk of {len(audio_bytes)} bytes from ElevenLabs")
                 
                 # Audio from ElevenLabs is already in μ-law format
                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
@@ -211,34 +211,47 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 }
                 await ws.send_text(json.dumps(media_message))
                 
-                if send_audio_to_twilio.chunk_count == 1 or send_audio_to_twilio.chunk_count % 5 == 0:
-                    logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
+                if send_audio_to_twilio.chunk_count == 1:
+                    logger.info(f"Sent first audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
                 return True
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
                 return False
-                
-        # Create new TTS service for this response
-        tts_service = WebSocketTTSService()
         
-        # Connect to TTS service
-        connect_success = await tts_service.connect(send_audio_to_twilio)
-        if not connect_success:
-            logger.error("Failed to connect to TTS service")
-            # Continue anyway to get the text response
-        
-        # Check if this is a welcome message
+        # For welcome message, handle it specially to optimize the response time
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
-            welcome_message = "Hello! Welcome to Callsure AI. I'm your AI voice assistant. How may I help you today?"
+            welcome_text = "Hello! Welcome to Callsure AI. I'm your AI voice assistant. How may I help you today?"
             
-            # Try to generate audio directly for welcome message
+            # Create TTS service specifically for welcome message
+            tts_service = WebSocketTTSService()
+            connect_start = time.time()
+            connect_success = await tts_service.connect(send_audio_to_twilio)
+            connect_time = time.time() - connect_start
+            logger.info(f"TTS connection established in {connect_time:.2f}s")
+            
             if connect_success:
-                await tts_service.stream_text(welcome_message)
-                # Wait for audio to be generated and sent
+                # Send welcome message directly
+                await tts_service.stream_text(welcome_text)
+                
+                # Give time for audio to generate
                 await asyncio.sleep(2.0)
                 
-            return welcome_message
+                # Close connection
+                await tts_service.stream_end()
+                await asyncio.sleep(0.2)
+                await tts_service.close()
             
+            logger.info("Completed response: " + welcome_text)
+            return welcome_text
+        
+        # For regular messages, use the more complex processing
+        # Create new TTS service
+        tts_service = WebSocketTTSService()
+        connect_success = await tts_service.connect(send_audio_to_twilio)
+        
+        if not connect_success:
+            logger.error("Failed to connect to TTS service")
+        
         # Collect the full response for logging
         full_response_text = ""
         current_sentence = ""
@@ -258,14 +271,16 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             
             # Stream text to client UI if connected
             if not manager.websocket_is_closed(ws):
-                await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
+                try:
+                    await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
+                except Exception as e:
+                    logger.error(f"Error sending stream chunk: {str(e)}")
             
             # Check if we have a sentence ending to trigger TTS
             ends_sentence = any(p in token for p in ".!?")
-            if ends_sentence and current_sentence.strip():
+            if ends_sentence and current_sentence.strip() and connect_success:
                 # Process sentence immediately to reduce latency
-                if connect_success:
-                    await tts_service.stream_text(current_sentence)
+                await tts_service.stream_text(current_sentence)
                 current_sentence = ""
             
             # Small delay to reduce CPU usage
@@ -280,12 +295,9 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         
         # Close the connection gracefully
         if connect_success:
-            try:
-                await tts_service.stream_end()
-                await asyncio.sleep(0.5)
-                await tts_service.close()
-            except Exception as e:
-                logger.error(f"Error during TTS cleanup: {str(e)}")
+            await tts_service.stream_end()
+            await asyncio.sleep(0.5)
+            await tts_service.close()
         
         logger.info(f"Completed response: {full_response_text}")
         return full_response_text
