@@ -17,7 +17,7 @@ from utils.logger import setup_logging
 from config.settings import settings
 from database.models import Company, Agent
 import uuid
-from services.speech.tts_service import TextToSpeechService
+from services.speech.tts_service import WebSocketTTSService
 
 # Initialize router and logging
 router = APIRouter()
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Initialize services
 vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
-tts_service = TextToSpeechService()
+tts_service = WebSocketTTSService()
 
 import asyncio
 import subprocess
