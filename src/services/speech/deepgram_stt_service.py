@@ -317,7 +317,7 @@ class DeepgramSTTService:
         except Exception as e:
             logger.error(f"Error handling utterance end for session {session_id}: {str(e)}")
     
-     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
+    async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                  callback: Optional[Callable[[str, str], Any]] = None):
         """
         Process an audio chunk for a session with proper connection handling
@@ -404,48 +404,68 @@ class DeepgramSTTService:
             return False
     
     async def close_session(self, session_id: str):
-        """Close a speech recognition session"""
+        """Close a speech recognition session with proper locking"""
         if session_id not in self.active_sessions:
             return False
             
-        try:
-            logger.info(f"Closing Deepgram STT session: {session_id}")
-            
-            # Send CloseStream message if WebSocket is still open
-            if session_id in self.connections and "ws" in self.connections[session_id]:
-                ws = self.connections[session_id]["ws"]
-                if not ws.closed:
+        # Get the lock for this session
+        if session_id in self.connection_locks:
+            lock = self.connection_locks[session_id]
+        else:
+            # Create a lock if one doesn't exist
+            self.connection_locks[session_id] = asyncio.Lock()
+            lock = self.connection_locks[session_id]
+        
+        async with lock:
+            try:
+                logger.info(f"Closing Deepgram STT session: {session_id}")
+                
+                # Cancel connection task if it exists
+                connection_task = self.active_sessions[session_id].get("connection_task")
+                if connection_task and not connection_task.done():
+                    connection_task.cancel()
                     try:
-                        close_msg = json.dumps({"type": "CloseStream"})
-                        await ws.send_str(close_msg)
-                        logger.info(f"Sent CloseStream message for session {session_id}")
-                    except:
+                        await connection_task
+                    except asyncio.CancelledError:
                         pass
-                    
-                    try:
-                        await ws.close()
-                    except:
-                        pass
-            
-            # Close the aiohttp session
-            if session_id in self.connections and "session" in self.connections[session_id]:
-                session = self.connections[session_id]["session"]
-                if not session.closed:
-                    await session.close()
-            
-            # Clean up session data
-            self.connections.pop(session_id, None)
-            self.active_sessions.pop(session_id, None)
-            self.user_speech_buffers.pop(session_id, None)
-            self.last_activity_times.pop(session_id, None)
-            self.speech_in_progress.pop(session_id, None)
-            
-            logger.info(f"Closed speech recognition session {session_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error closing session {session_id}: {str(e)}")
-            return False
+                
+                # Send CloseStream message if WebSocket is still open
+                if session_id in self.connections and "ws" in self.connections[session_id]:
+                    ws = self.connections[session_id]["ws"]
+                    if not ws.closed:
+                        try:
+                            close_msg = json.dumps({"type": "CloseStream"})
+                            await ws.send_str(close_msg)
+                            logger.info(f"Sent CloseStream message for session {session_id}")
+                        except:
+                            pass
+                        
+                        try:
+                            await ws.close()
+                        except:
+                            pass
+                
+                # Close the aiohttp session
+                if session_id in self.connections and "session" in self.connections[session_id]:
+                    session = self.connections[session_id]["session"]
+                    if not session.closed:
+                        await session.close()
+                
+                # Clean up session data
+                self.connections.pop(session_id, None)
+                self.active_sessions.pop(session_id, None)
+                self.user_speech_buffers.pop(session_id, None)
+                self.last_activity_times.pop(session_id, None)
+                self.speech_in_progress.pop(session_id, None)
+                self.connection_locks.pop(session_id, None)
+                
+                logger.info(f"Closed speech recognition session {session_id}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error closing session {session_id}: {str(e)}")
+                return False
+    
     
     async def get_completed_speech(self, session_id: str):
         """Get all completed speech for a session"""
