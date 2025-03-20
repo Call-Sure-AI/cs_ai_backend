@@ -768,17 +768,19 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
-                                # logger.info(f"payload: {payload}")
                                 
                                 # Convert Twilio audio format for processing
                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
-                                logger.info(f"[{connection_id}] Received audio chunk: {len(audio_data)} bytes")
-                                if audio_data:
+                                
+                                # Add a null check here before processing
+                                if audio_data:  # Only process if audio_data is not None
                                     # Process the audio
                                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
                                     # Update last speech time
                                     last_speech_time = time.time()
                                     audio_chunks += 1
+                                else:
+                                    logger.debug(f"[{connection_id}] Received silent audio chunk, skipping processing")
                                     
                         elif event == 'stop':
                             logger.info(f"[{connection_id}] Call ended")
