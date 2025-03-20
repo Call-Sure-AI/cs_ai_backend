@@ -28,101 +28,42 @@ class SpeechToTextService:
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes, 
                                 callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
-        """Process an audio chunk for a session with faster response time"""
         try:
+            # Buffer audio chunks
             if session_id not in self.active_sessions:
-                # Initialize new session
                 self.active_sessions[session_id] = {
                     "buffer": bytearray(),
-                    "last_activity": time.time(),
-                    "processing": False,
                     "chunk_count": 0,
-                    "energy_levels": [],  # Track energy for better silence detection
+                    "last_activity": time.time()
                 }
-                
-            # Add to buffer
-            self.active_sessions[session_id]["buffer"].extend(audio_data)
-            self.active_sessions[session_id]["chunk_count"] += 1
-            self.active_sessions[session_id]["last_activity"] = time.time()
             
-            # Calculate energy level to detect speech vs silence
-            if len(audio_data) > 0:
-                # For μ-law, silence is typically around value 128
-                non_silent_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
-                energy_level = (non_silent_bytes / len(audio_data)) * 100
-                
-                # Keep a rolling window of energy levels
-                energies = self.active_sessions[session_id].get("energy_levels", [])
-                energies.append(energy_level)
-                if len(energies) > 5:  # Keep last 5 energy readings
-                    energies.pop(0)
-                self.active_sessions[session_id]["energy_levels"] = energies
+            session = self.active_sessions[session_id]
+            session["buffer"].extend(audio_data)
+            session["chunk_count"] += 1
+            session["last_activity"] = time.time()
             
-            # Get buffer size
-            buffer_size = len(self.active_sessions[session_id]["buffer"])
+            # Combine audio chunks for more robust transcription
+            MIN_BUFFER_SIZE = 2000  # Minimum bytes for transcription
+            MAX_BUFFER_SIZE = 10000  # Maximum buffer size
             
-            # Log buffer growth occasionally
-            if self.active_sessions[session_id]["chunk_count"] % 100 == 0:
-                logger.info(f"Audio buffer for {session_id}: {buffer_size} bytes after {self.active_sessions[session_id]['chunk_count']} chunks")
-            
-            # Process based on buffer size or detected energy
-            # Further reduce buffer threshold to improve responsiveness
-            should_process = False
-            
-            # Standard threshold-based processing
-            if buffer_size > 2000 and not self.active_sessions[session_id]["processing"]:
-                should_process = True
+            if len(session["buffer"]) >= MIN_BUFFER_SIZE and len(session["buffer"]) <= MAX_BUFFER_SIZE:
+                # Attempt transcription of accumulated buffer
+                text = await self._recognize_speech(bytes(session["buffer"]), session_id)
                 
-            # Energy-based processing - process immediately if we detect speech
-            energy_avg = sum(self.active_sessions[session_id].get("energy_levels", [0])) / max(len(self.active_sessions[session_id].get("energy_levels", [1])), 1)
-            if energy_avg > 5.0 and buffer_size > 2000 and not self.active_sessions[session_id]["processing"]:
-                should_process = True
-            
-            logger.debug(f"Session {session_id} energy_avg: {energy_avg:.2f}, buffer_size: {buffer_size}")
-            active_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
-            silent_bytes = len(audio_data) - active_bytes
-            energy_ratio = active_bytes / max(len(audio_data), 1) * 100
-            logger.debug(f"Audio quality: {len(audio_data)} bytes, {energy_ratio:.2f}% energy, {active_bytes} active, {silent_bytes} silent")
-    
-            current_time = time.time()
-            last_forced_process = self.active_sessions[session_id].get("last_forced_process", 0)
-            if current_time - last_forced_process > 3.0 and buffer_size > 1000 and not self.active_sessions[session_id]["processing"]:
-                logger.info(f"Forcing buffer processing after 3 seconds for {session_id}")
-                self.active_sessions[session_id]["last_forced_process"] = current_time
-                should_process = True
-
-
-            
-            if should_process:
-                self.active_sessions[session_id]["processing"] = True
-                
-                # Get buffer copy
-                audio_buffer = bytes(self.active_sessions[session_id]["buffer"])
-                
-                # Clear the buffer after copying
-                self.active_sessions[session_id]["buffer"] = bytearray()
-                
-                # Process audio through Deepgram
-                text = await self._recognize_speech(audio_buffer, session_id)
-                
-                # If text was recognized and callback provided
-                if text and callback and text.strip():
-                    logger.info(f"Recognized speech for {session_id}: '{text}'")
+                if text and callback:
+                    logger.info(f"Transcribed speech for {session_id}: '{text}'")
                     await callback(session_id, text)
-                elif text and text.strip():
-                    logger.info(f"Recognized speech for {session_id} but no callback: '{text}'")
-                elif self.active_sessions[session_id]["chunk_count"] > 200:  # Reduced threshold
-                    # If we've collected a lot of audio but still no speech, log it
-                    logger.warning(f"No speech detected after {self.active_sessions[session_id]['chunk_count']} chunks for {session_id}")
-                    
-                self.active_sessions[session_id]["processing"] = False
                 
-            return True
+                # Clear buffer after processing
+                session["buffer"].clear()
             
-        except Exception as e:
-            logger.error(f"Error processing audio chunk for session {session_id}: {str(e)}")
-            return False
+            return True
         
+        except Exception as e:
+            logger.error(f"Error processing audio chunk for {session_id}: {str(e)}")
+            return False
+    
+       
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Convert audio data to text using Deepgram"""
         try:
@@ -264,33 +205,33 @@ class SpeechToTextService:
         
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes with enhanced logging"""
+        """Convert Twilio's base64 audio format to raw bytes with enhanced logging and processing"""
         try:
             # Decode base64 audio
             audio_data = base64.b64decode(base64_payload)
             
-            # Detailed logging
-            logger.info(f"Converted audio for session {session_id}: "
-                        f"Base64 input length: {len(base64_payload)} chars, "
-                        f"Raw audio bytes: {len(audio_data)} bytes")
+            # Enhanced logging with audio characteristics
+            total_non_silence_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
+            silence_percentage = (len(audio_data) - total_non_silence_bytes) / len(audio_data) * 100
             
-            # Optional: Log audio chunk details for debugging
-            if len(audio_data) > 0:
-                # Calculate basic audio characteristics
-                silence_level = 128  # μ-law silence reference
-                non_silent_bytes = sum(1 for b in audio_data if abs(b - silence_level) > 10)
-                silence_percentage = (len(audio_data) - non_silent_bytes) / len(audio_data) * 100
-                
-                logger.debug(f"Audio chunk details for {session_id}: "
-                            f"Total bytes: {len(audio_data)}, "
-                            f"Non-silent bytes: {non_silent_bytes}, "
-                            f"Silence: {silence_percentage:.2f}%")
+            logger.info(
+                f"Audio Conversion Details for {session_id}: "
+                f"Base64 Input: {len(base64_payload)} chars, "
+                f"Raw Bytes: {len(audio_data)}, "
+                f"Non-Silence Bytes: {total_non_silence_bytes}, "
+                f"Silence: {silence_percentage:.2f}%"
+            )
             
-            return audio_data
+            # Return audio data only if it contains meaningful signal
+            if total_non_silence_bytes > len(audio_data) * 0.1:  # At least 10% non-silence
+                return audio_data
+            
+            return None
             
         except Exception as e:
-            logger.error(f"Error converting Twilio audio for session {session_id}: {str(e)}")
+            logger.error(f"Audio conversion error for {session_id}: {str(e)}")
             return None
+    
     
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 0.8):
         """Check if there has been silence (no new audio) for a specified duration"""
