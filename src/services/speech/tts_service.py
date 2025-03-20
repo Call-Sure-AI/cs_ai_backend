@@ -1,319 +1,168 @@
-import logging
-import aiohttp
-import base64
-import asyncio
-from typing import Optional, AsyncGenerator
-from config.settings import settings
-import os
-import time
+# In services/speech/tts_service.py
 
+import aiohttp
+import asyncio
+import base64
+import logging
+import json
+import time
+import os
+from typing import Optional, AsyncGenerator, Dict, Any, Callable
 
 logger = logging.getLogger(__name__)
 
-class TextToSpeechService:
+class WebSocketTTSService:
     def __init__(self):
-        """Initialize ElevenLabs TTS Service"""
-        self.voice_id = os.getenv("VOICE_ID","IKne3meq5aSn9XLyUdCD")
+        """Initialize WebSocket-based ElevenLabs TTS Service"""
+        self.voice_id = os.getenv("VOICE_ID", "IKne3meq5aSn9XLyUdCD")
         self.api_key = os.getenv("ELEVEN_LABS_API_KEY")
-        self.chunk_size = 32 * 1024  # 32KB per chunk for streaming
-        self.chunk_delay = 0.01  # 10ms delay to prevent overloading
+        self.base_url = "wss://api.elevenlabs.io/v1/text-to-speech"
+        self.ws = None
+        self.audio_callback = None
+        self.is_ready = False
+        self.pending_audio = []
         
         # Validate configuration
         if not self.api_key:
             logger.warning("ElevenLabs API key is not set. TTS services will not work.")
     
-    async def detect_language(self, text: str) -> str:
+    async def connect(self, audio_callback: Callable[[bytes], Any] = None):
         """
-        Detect language and select appropriate voice/model.
-        This is a simplified implementation - consider using a more robust language detection library.
-        """
-        # Simple language detection heuristics
-        if any('\u0380' <= char <= '\u03FF' for char in text):  # Greek characters
-            return 'el'
-        elif any('\u0590' <= char <= '\u05FF' for char in text):  # Hebrew characters
-            return 'he'
-        elif any('\u0600' <= char <= '\u06FF' for char in text):  # Arabic characters
-            return 'ar'
-        elif any('\u0400' <= char <= '\u04FF' for char in text):  # Cyrillic characters
-            return 'ru'
-        elif any('\u00C0' <= char <= '\u024F' for char in text):  # Extended Latin characters (covers most European languages)
-            if any(char in text for char in 'áéíóúñ'):  # Spanish-specific characters
-                return 'es'
-            return 'en'
-        return 'en'  # Default to English
-    
+        Connect to ElevenLabs WebSocket API
         
-    async def generate_audio(self, 
-                            text: str, 
-                            language: Optional[str] = None,
-                            voice_settings: Optional[dict] = None) -> Optional[bytes]:
-        """
-        Converts text to speech using ElevenLabs API with performance optimizations.
-        """
-        start_time = time.time()
-        try:
-            # Log the start of TTS generation with timestamp
-            logger.info(f"[TTS_SERVICE] Starting TTS generation at {start_time:.3f}")
-            logger.info(f"[TTS_SERVICE] Text to convert (length {len(text)}): '{text[:50]}...'")
-            
-            # Detect language if not provided
-            if not language:
-                language = await self.detect_language(text)
-                logger.info(f"[TTS_SERVICE] Detected language: {language}")
-            
-            # Select appropriate voice and model
-            voice_config = {
-                'en': {
-                    'voice_id': 'eleven_monolingual_v1',
-                    'model_id': 'eleven_turbo_v2_5'  # Using turbo for faster generation
-                },
-                # Other languages...
-            }
-            
-            config = voice_config.get(language, voice_config.get('en'))
-            logger.info(f"[TTS_SERVICE] Using voice: {config['voice_id']}, model: {config['model_id']}")
-            
-            # Default voice settings
-            default_settings = {
-                "stability": 0.3,
-                "similarity_boost": 0.5,
-                "style": 0.0,  # Reduced style for faster generation
-                "use_speaker_boost": True
-            }
-            
-            # Merge custom settings with defaults
-            voice_settings = {**default_settings, **(voice_settings or {})}
-            
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/IKne3meq5aSn9XLyUdCD"
-            headers = {
-                "Accept": "audio/mpeg",
-                "Content-Type": "application/json",
-                "xi-api-key": self.api_key
-            }
-
-            payload = {
-                "text": text,
-                "model_id": config['model_id'],
-                "voice_settings": voice_settings
-            }
-
-            logger.info(f"[TTS_SERVICE] Sending TTS API request at {time.time()-start_time:.3f}s")
-
-            async with aiohttp.ClientSession() as session:
-                request_start = time.time()
-                async with session.post(
-                    url, 
-                    json=payload, 
-                    headers=headers, 
-                    timeout=aiohttp.ClientTimeout(total=5)  # Reduced timeout
-                ) as response:
-                    request_time = time.time() - request_start
-                    logger.info(f"[TTS_SERVICE] API request took {request_time:.3f}s")
-                    
-                    response_data = await response.read()
-                    total_time = time.time() - start_time
-                    
-                    if response.status == 200:
-                        logger.info(f"[TTS_SERVICE] Success! Received {len(response_data)} bytes in {total_time:.3f}s")
-                        return response_data
-                    else:
-                        error_message = await response.text()
-                        logger.error(f"[TTS_SERVICE] API error: {response.status} - {error_message} after {total_time:.3f}s")
-                        return None
-        
-        except asyncio.TimeoutError:
-            logger.error(f"[TTS_SERVICE] Request timed out after {time.time()-start_time:.3f}s")
-            return None
-        except Exception as e:
-            logger.error(f"[TTS_SERVICE] Error in TTS generation: {str(e)} after {time.time()-start_time:.3f}s", exc_info=True)
-            return None
-    
-    
-    async def stream_text_to_speech(self, 
-                                    text: str, 
-                                    language: Optional[str] = None,
-                                    voice_settings: Optional[dict] = None) -> AsyncGenerator[bytes, None]:
-        """
-        Streams audio response from ElevenLabs API.
-
         Args:
-            text (str): The input text to be converted into speech.
-            language (str, optional): Language code
-            voice_settings (dict, optional): Custom voice settings
-        
-        Yields:
-            bytes: Audio chunks as they arrive.
+            audio_callback: Optional callback to receive audio chunks as they arrive
         """
+        if self.ws is not None:
+            await self.ws.close()
+            self.ws = None
+            
+        self.audio_callback = audio_callback
+        self.is_ready = False
+        self.pending_audio = []
+        
         try:
-            # Detect language if not provided
-            if not language:
-                language = await self.detect_language(text)
-            
-            # Select appropriate voice and model
-            voice_config = {
-                'en': {
-                    'voice_id': 'eleven_monolingual_v1',
-                    'model_id': 'eleven_turbo_v2_5'
-                },
-                'es': {
-                    'voice_id': 'eleven_multilingual_v2',
-                    'model_id': 'eleven_multilingual_v2'
-                },
-                'default': {
-                    'voice_id': 'eleven_multilingual_v2',
-                    'model_id': 'eleven_multilingual_v2'
-                }
+            # Construct WS URL with parameters
+            url = f"{self.base_url}/{self.voice_id}/stream-input"
+            params = {
+                "model_id": "eleven_turbo_v2_5",  # Using turbo for faster generation
+                "output_format": "mulaw_8000",  # Direct Twilio-compatible format
+                "optimize_streaming_latency": "3",  # Max optimization
+                "auto_mode": "false",  # We'll handle chunking for better quality
             }
             
-            # Select voice configuration
-            config = voice_config.get(language, voice_config['default'])
+            # Add query params to URL
+            query_string = "&".join(f"{k}={v}" for k, v in params.items())
+            full_url = f"{url}?{query_string}"
             
-            # Default voice settings
-            default_settings = {
-                "stability": 0.5,
-                "similarity_boost": 0.8,
-                "style": 0.2,
-                "use_speaker_boost": True
+            logger.info(f"Connecting to ElevenLabs WebSocket at {full_url}")
+            
+            # Connect to WebSocket
+            session = aiohttp.ClientSession()
+            headers = {"xi-api-key": self.api_key}
+            self.ws = await session.ws_connect(full_url, headers=headers)
+            
+            # Start listening for audio chunks
+            asyncio.create_task(self._listen_for_audio())
+            
+            # Initialize connection with empty text
+            voice_settings = {
+                "stability": 0.3,  # Lower for faster response
+                "similarity_boost": 0.5,  # Lower for faster response
+                "speed": 1.2  # Slightly faster speech
             }
             
-            # Merge custom settings with defaults
-            voice_settings = {**default_settings, **(voice_settings or {})}
-            
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/IKne3meq5aSn9XLyUdCD/stream"
-            headers = {
-                "Accept": "audio/mpeg",
-                "Content-Type": "application/json",
-                "xi-api-key": self.api_key
-            }
-
-            payload = {
-                "text": text,
-                "model_id": config['model_id'],
+            init_message = {
+                "text": " ",
                 "voice_settings": voice_settings
             }
-
-            logger.info(f"Starting TTS stream: language={language}, voice={config['voice_id']}, text_length={len(text)}")
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        logger.info(f"[TTS_STREAM_DEBUG] Audio stream started: content-type={response.headers.get('content-type')}")
-                        
-                        # Use an async generator to stream chunks
-                        async for chunk in response.content.iter_chunked(self.chunk_size):
-                            yield chunk
-                            await asyncio.sleep(self.chunk_delay)
-                    else:
-                        error_message = await response.text()
-                        logger.error(f"ElevenLabs streaming error: {response.status} - {error_message}")
-        
-        except asyncio.TimeoutError:
-            logger.error("TTS streaming request timed out")
-        except Exception as e:
-            logger.error(f"Unexpected error in TTS streaming: {str(e)}", exc_info=True)
-
-    # async def convert_audio_for_twilio(self, audio_bytes: bytes) -> Optional[bytes]:
-    #     """
-    #     Convert generated audio to Twilio-compatible μ-law format.
-        
-    #     Args:
-    #         audio_bytes (bytes): Input audio bytes
-        
-    #     Returns:
-    #         Optional[bytes]: Converted audio bytes or None if conversion fails
-    #     """
-    #     try:
-    #         import subprocess
-    #         import tempfile
             
-    #         # Create temporary input and output files
-    #         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as input_file, \
-    #              tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as output_file:
-                
-    #             input_file.write(audio_bytes)
-    #             input_file.flush()
-                
-    #             # FFmpeg command to convert to Twilio-compatible μ-law
-    #             ffmpeg_command = [
-    #                 'ffmpeg', 
-    #                 '-y',                   # Overwrite output file
-    #                 '-i', input_file.name,  # Input file
-    #                 '-ar', '8000',          # Set sample rate to 8kHz
-    #                 '-ac', '1',             # Mono channel
-    #                 '-acodec', 'pcm_mulaw', # μ-law encoding
-    #                 '-f', 'mulaw',          # μ-law format
-    #                 output_file.name        # Output file
-    #             ]
-                
-    #             # Run FFmpeg conversion
-    #             result = subprocess.run(
-    #                 ffmpeg_command, 
-    #                 capture_output=True, 
-    #                 text=True
-    #             )
-                
-    #             # Check conversion result
-    #             if result.returncode == 0:
-    #                 with open(output_file.name, 'rb') as f:
-    #                     converted_audio = f.read()
-                    
-    #                 logger.info(f"Audio conversion successful: {len(converted_audio)} bytes")
-    #                 return converted_audio
-    #             else:
-    #                 logger.error(f"FFmpeg conversion failed: {result.stderr}")
-    #                 return None
+            await self.ws.send_json(init_message)
+            self.is_ready = True
+            logger.info("Connected to ElevenLabs WebSocket API")
+            
+            return True
         
-    #     except Exception as e:
-    #         logger.error(f"Error converting audio for Twilio: {str(e)}", exc_info=True)
-    #         return None
-    #     finally:
-    #         # Clean up temporary files
-    #         import os
-    #         for filename in [input_file.name, output_file.name]:
-    #             try:
-    #                 os.unlink(filename)
-    #             except:
-    #                 pass
-                
-                
-
-    async def convert_audio_for_twilio(self, audio_bytes: bytes) -> Optional[bytes]:
-        """
-        Convert generated audio to Twilio-compatible μ-law format with optimized pipeline.
-        """
+        except Exception as e:
+            logger.error(f"Error connecting to ElevenLabs WebSocket: {str(e)}")
+            return False
+    
+    async def _listen_for_audio(self):
+        """Listen for audio chunks from ElevenLabs"""
+        if self.ws is None:
+            return
+            
         try:
-            import subprocess
-            
-            # FFmpeg command using pipes for faster I/O
-            ffmpeg_command = [
-                'ffmpeg', 
-                '-y',                   # Overwrite output
-                '-f', 'mp3',            # Input format
-                '-i', 'pipe:0',         # Read from stdin
-                '-ar', '8000',          # Set sample rate to 8kHz
-                '-ac', '1',             # Mono channel
-                '-acodec', 'pcm_mulaw', # μ-law encoding
-                '-f', 'mulaw',          # μ-law format
-                'pipe:1'                # Output to stdout
-            ]
-            
-            # Run FFmpeg with pipes
-            process = subprocess.run(
-                ffmpeg_command,
-                input=audio_bytes,      # Send MP3 to stdin
-                capture_output=True,    # Capture stdout
-                check=True
-            )
-            
-            converted_audio = process.stdout
-            
-            if converted_audio:
-                logger.info(f"Audio conversion successful: {len(converted_audio)} bytes")
-                return converted_audio
-            else:
-                logger.error("FFmpeg conversion produced no output")
-                return None
-        
+            async for msg in self.ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
+                    
+                    # Check if this is an audio chunk
+                    if "audio" in data:
+                        # Decode base64 audio
+                        audio_bytes = base64.b64decode(data["audio"])
+                        
+                        # If we have a callback, send the audio
+                        if self.audio_callback:
+                            await self.audio_callback(audio_bytes)
+                        else:
+                            # Store for later retrieval
+                            self.pending_audio.append(audio_bytes)
+                            
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f"WebSocket error: {msg.data}")
+                    break
+                    
         except Exception as e:
-            logger.error(f"Error converting audio for Twilio: {str(e)}", exc_info=True)
-            return None
+            logger.error(f"Error in WebSocket audio listener: {str(e)}")
+        finally:
+            logger.info("WebSocket audio listener stopped")
+    
+    async def stream_text(self, text: str, trigger_gen: bool = True):
+        """
+        Stream text to ElevenLabs for TTS generation
+        
+        Args:
+            text: Text chunk to send
+            trigger_gen: Whether to trigger generation (True for most chunks)
+        """
+        if not self.is_ready or self.ws is None:
+            logger.warning("WebSocket not connected, attempting to reconnect")
+            success = await self.connect(self.audio_callback)
+            if not success:
+                logger.error("Failed to reconnect to ElevenLabs")
+                return False
+        
+        try:
+            message = {
+                "text": text,
+                "try_trigger_generation": trigger_gen
+            }
+            
+            await self.ws.send_json(message)
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending text to ElevenLabs: {str(e)}")
+            return False
+    
+    async def close(self):
+        """Close the WebSocket connection"""
+        if self.ws is not None:
+            try:
+                # Send empty text to signal end
+                end_message = {"text": ""}
+                await self.ws.send_json(end_message)
+                await self.ws.close()
+            except:
+                pass
+            finally:
+                self.ws = None
+                self.is_ready = False
+                logger.info("Closed ElevenLabs WebSocket connection")
+    
+    async def get_pending_audio(self):
+        """Get and clear pending audio chunks"""
+        audio = b''.join(self.pending_audio)
+        self.pending_audio = []
+        return audio

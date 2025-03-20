@@ -60,135 +60,106 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.error(f"Missing resources in agent for client {client_id}")
             return
 
-        full_response_text = ""
-        sentence_buffer = ""
-        # Instantiate TTS service once for this function
-        min_chars_to_process = 25
+        # Create a stop event for barge-in
+        nonlocal should_stop_speaking, is_system_speaking
+        should_stop_speaking = asyncio.Event()
+        is_system_speaking = True
         
-        tts_service = TextToSpeechService()
+        # Initialize WebSocket TTS service
+        
+        stream_sid = app.state.stream_sids.get(client_id, "")
+        
+        # Define callback to send audio directly to Twilio
+        async def send_audio_to_twilio(audio_bytes):
+            if should_stop_speaking.is_set():
+                return
+                
+            try:
+                # Audio is already in μ-law format from ElevenLabs
+                encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                media_message = {
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": encoded_audio}
+                }
+                await ws.send_text(json.dumps(media_message))
+            except Exception as e:
+                logger.error(f"Error sending audio to Twilio: {str(e)}")
+        
+        # Connect to ElevenLabs with the callback
+        await tts_service.connect(send_audio_to_twilio)
+        
+        # Start sentence with empty string to initialize generation
+        current_sentence = ""
+        full_response_text = ""
+        last_chunk_time = time.time()
+        buffer_size = 0
 
+        # Process tokens from the chain
         async for token in rag_service.get_answer_with_chain(
             chain=chain,
             question=msg_data.get('message', ''),
             company_name="Callsure AI"
         ):
+            # Check if we should stop due to barge-in
+            if should_stop_speaking.is_set():
+                logger.info("Stopping text generation due to user barge-in")
+                await tts_service.close()
+                break
+                
+            # Add token to text
             full_response_text += token
-            sentence_buffer += token
-
-            # Optionally, continue to send text chunks as they come
+            current_sentence += token
+            buffer_size += len(token)
+            
+            # Send text chunks as they come for UI
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
+            
+            # Stream text to ElevenLabs in reasonable chunks
+            # Send after accumulating a few tokens or when enough time has passed
+            current_time = time.time()
+            time_since_last_chunk = current_time - last_chunk_time
+            
+            # Determine if this is a chunk boundary (punctuation, pause, or buffer size)
+            is_chunk_boundary = (
+                any(char in token for char in ".!?,;") or  # Punctuation
+                buffer_size >= 15 or  # Buffer size threshold
+                time_since_last_chunk >= 0.2  # Time threshold
+            )
+            
+            if is_chunk_boundary:
+                # Stream the accumulated text to ElevenLabs
+                await tts_service.stream_text(current_sentence, trigger_gen=True)
+                current_sentence = ""
+                buffer_size = 0
+                last_chunk_time = current_time
+                
+                # Small delay to allow processing
+                await asyncio.sleep(0.05)
 
-
-            # Check if we have enough text to process, even without punctuation
-            if len(sentence_buffer) >= min_chars_to_process and (' ' in sentence_buffer):
-                # Process text more aggressively with smaller chunks
-                phrase = sentence_buffer.strip()
-                logger.info(f"Processing phrase for TTS: {phrase}")
-
-                # Generate TTS audio for the phrase
-                mp3_bytes = await tts_service.generate_audio(phrase)
-                if mp3_bytes:
-                    # Convert MP3 to μ-law 8000 Hz audio
-                    mu_law_audio = await tts_service.convert_audio_for_twilio(mp3_bytes)
-                    if mu_law_audio:
-                        encoded_audio = base64.b64encode(mu_law_audio).decode("utf-8")
-                        stream_sid = app.state.stream_sids.get(client_id, "")
-                        media_message = {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": encoded_audio}
-                        }
-                        await ws.send_text(json.dumps(media_message))
-                        logger.info("[process_buffered_message] Sent TTS audio for phrase.")
-
-                        # Send mark event
-                        mark_message = {
-                            "event": "mark",
-                            "streamSid": stream_sid,
-                            "mark": {"name": f"mark_{int(time.time())}"}
-                        }
-                        await ws.send_text(json.dumps(mark_message))
-                    
-                # Reset the buffer after processing this chunk
-                sentence_buffer = ""
-
-
-            # Check if the sentence buffer ends with a sentence-ending punctuation
-            elif sentence_buffer.strip() and sentence_buffer.strip()[-1] in ".!?":
-                sentence = sentence_buffer.strip()
-                logger.info(f"Completed sentence for TTS: {sentence}")
-
-                # Generate TTS audio for the complete sentence
-                mp3_bytes = await tts_service.generate_audio(sentence)
-                if mp3_bytes:
-                    # Convert MP3 to μ-law 8000 Hz audio
-                    mu_law_audio = await tts_service.convert_audio_for_twilio(mp3_bytes)
-                    if mu_law_audio:
-                        encoded_audio = base64.b64encode(mu_law_audio).decode("utf-8")
-                        stream_sid = app.state.stream_sids.get(client_id, "")
-                        media_message = {
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": encoded_audio}
-                        }
-                        await ws.send_text(json.dumps(media_message))
-                        logger.info("[process_buffered_message] Sent TTS audio for completed sentence.")
-
-                        # Optionally, send a 'mark' event to signal audio playback
-                        mark_message = {
-                            "event": "mark",
-                            "streamSid": stream_sid,
-                            "mark": {"name": f"mark_{int(time.time())}"}
-                        }
-                        await ws.send_text(json.dumps(mark_message))
-                        logger.info("[process_buffered_message] Sent mark event for TTS audio.")
-                    else:
-                        logger.error("[process_buffered_message] Error converting audio for Twilio.")
-                else:
-                    logger.error("[process_buffered_message] Error generating TTS audio.")
-
-                # Reset the sentence buffer after processing the complete sentence
-                sentence_buffer = ""
-
-        # Process any remaining text that may not end with punctuation
-        if sentence_buffer.strip():
-            sentence = sentence_buffer.strip()
-            logger.info(f"Processing remaining text for TTS: {sentence}")
-            mp3_bytes = await tts_service.generate_audio(sentence)
-            if mp3_bytes:
-                mu_law_audio = await tts_service.convert_audio_for_twilio(mp3_bytes)
-                if mu_law_audio:
-                    encoded_audio = base64.b64encode(mu_law_audio).decode("utf-8")
-                    stream_sid = app.state.stream_sids.get(client_id, "")
-                    media_message = {
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": encoded_audio}
-                    }
-                    await ws.send_text(json.dumps(media_message))
-                    logger.info("[process_buffered_message] Sent final TTS audio for remaining text.")
-
-                    mark_message = {
-                        "event": "mark",
-                        "streamSid": stream_sid,
-                        "mark": {"name": f"mark_{int(time.time())}"}
-                    }
-                    await ws.send_text(json.dumps(mark_message))
-                    logger.info("[process_buffered_message] Sent final mark event.")
-                else:
-                    logger.error("[process_buffered_message] Error converting final audio for Twilio.")
-            else:
-                logger.error("[process_buffered_message] Error generating final TTS audio.")
-
+        # Send any remaining text
+        if current_sentence and not should_stop_speaking.is_set():
+            await tts_service.stream_text(current_sentence, trigger_gen=True)
+            
+        # Send empty text to signal end of generation
+        if not should_stop_speaking.is_set():
+            await asyncio.sleep(0.5)  # Allow final audio to generate
+            await tts_service.stream_text("", trigger_gen=False)
+        
+        # Close the WebSocket connection
+        await tts_service.close()
+        
+        # Reset speaking flag
+        is_system_speaking = False
+        
         logger.info(f"Complete AI response: {full_response_text}")
         return full_response_text
 
     except Exception as e:
         logger.error(f"Buffered message processing error: {str(e)}")
+        is_system_speaking = False
         raise
-
-
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
@@ -222,7 +193,15 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     last_processed_time = time.time()
     silence_threshold = 1.5
     welcome_sent = False
+    
+    
+    # Add variables for barge-in handling
     is_system_speaking = False
+    should_stop_speaking = asyncio.Event()
+    user_speech_buffer = []
+    last_speech_time = time.time()
+    speech_timeout = 1.0  # Time to wait after speech before processing
+    min_speech_energy = 3.0  # Minimum energy level to consider as speech
 
     try:
         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
@@ -287,20 +266,51 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
 
         # Define transcription handler (capture app via nonlocal)
         async def handle_transcription(session_id, transcribed_text):
-            nonlocal is_processing, last_processed_time, app, is_system_speaking
-            if not is_processing and transcribed_text.strip():
+            nonlocal is_processing, last_processed_time, last_speech_time, user_speech_buffer
+            
+            # Update speech timing
+            last_speech_time = time.time()
+            
+            if transcribed_text.strip():
+                # Add to speech buffer if it's not already there
+                if transcribed_text not in user_speech_buffer:
+                    user_speech_buffer.append(transcribed_text)
+                    logger.info(f"[{connection_id}] Added speech to buffer: '{transcribed_text}'")
+                
+                # If system is speaking, stop it to handle barge-in
+                if is_system_speaking:
+                    should_stop_speaking.set()
+                    logger.info(f"[{connection_id}] User barge-in detected - stopping system speech")
+                
+                # Don't process immediately - wait for silence
+                return
+            
+            # Only process after a period of silence following speech
+            current_time = time.time()
+            silence_duration = current_time - last_speech_time
+            
+            if not is_processing and user_speech_buffer and silence_duration >= speech_timeout:
                 is_processing = True
-                is_system_speaking = True  # System will start speaking
-                last_processed_time = time.time()
+                last_processed_time = current_time
+                
+                # Combine all speech fragments
+                combined_speech = " ".join(user_speech_buffer)
+                user_speech_buffer = []  # Clear buffer
+                
+                logger.info(f"[{connection_id}] Processing combined speech: '{combined_speech}'")
+                
                 message_data = {
                     "type": "message",
-                    "message": transcribed_text,
+                    "message": combined_speech,
                     "source": "twilio"
                 }
+                
+                # Process the speech
                 asyncio.create_task(
                     process_message_with_retries(connection_manager, client_id, message_data, app)
                 )
-
+        
+        
         # Main processing loop
         while not websocket_closed:
             try:
@@ -317,14 +327,14 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                     audio_data = message['bytes']
                     audio_chunks += 1
                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
-                    if audio_chunks == 1 or audio_chunks % 100 == 0:
-                        logger.info(f"[{connection_id}] Processed audio chunk #{audio_chunks}")
+                     
                 elif 'text' in message:
                     text_data = message['text']
                     try:
                         
                         data = json.loads(text_data)
                         event = data.get('event')
+                        
                         if data['event'] == 'mark':
                             mark_name = data.get('mark', {}).get('name', '')
                             logger.info(f"[TWILIO_MARK] Received mark response: {mark_name} - Audio playback confirmed!")
@@ -378,34 +388,31 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                                 welcome_sent = True
 
                         
-                        elif event == 'media':
+                        if event == 'media':
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
                                 
-                                # Check for user speech during system speech
-                                # We need to track if system is currently speaking
-                                if welcome_sent and not is_processing:
-                                    # Simple energy detection for quick barge-in detection
-                                    try:
-                                        audio_bytes = base64.b64decode(payload)
-                                        # For μ-law audio, count non-zero bytes as a simple energy measure
-                                        non_zero = sum(1 for b in audio_bytes if b != 128)  # 128 is silence in μ-law
-                                        energy_level = (non_zero / len(audio_bytes)) * 100
-                                        
-                                        # If energy is high enough, consider it speech
-                                        if energy_level > 5:  # 5% threshold can be tuned
-                                            logger.info(f"[{connection_id}] Potential user barge-in detected")
-                                            # We could add code here to stop system speech if needed
-                                    except Exception as e:
-                                        logger.debug(f"[{connection_id}] Error in barge-in detection: {str(e)}")
+                                # Check for speech activity for barge-in detection
+                                try:
+                                    audio_bytes = base64.b64decode(payload)
+                                    non_zero = sum(1 for b in audio_bytes if b != 128)
+                                    energy_level = (non_zero / len(audio_bytes)) * 100
+                                    
+                                    # If energy is high enough, consider it speech
+                                    if energy_level > min_speech_energy and is_system_speaking:
+                                        logger.info(f"[{connection_id}] Potential user barge-in detected")
+                                        should_stop_speaking.set()
+                                        is_system_speaking = False
+                                except Exception as e:
+                                    logger.debug(f"[{connection_id}] Error in barge-in detection: {str(e)}")
                                 
-                                # Continue with normal processing
+                                # Process audio normally
                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
                                 if audio_data:
                                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
                                     audio_chunks += 1
-                        
+                                    
                         elif event == 'stop':
                             logger.info(f"[{connection_id}] STOP event received")
                             await stt_service.process_final_buffer(client_id, handle_transcription)
