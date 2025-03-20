@@ -179,55 +179,6 @@ async def process_message_with_retries(manager, cid, msg_data, app, max_retries=
     return
 
 
-async def send_welcome_message_with_ws(client_id, app, websocket):
-    """Send welcome message using WebSocket TTS"""
-    try:
-        stream_sid = app.state.stream_sids.get(client_id, "")
-        if not stream_sid:
-            logger.error(f"No stream SID found for client {client_id}")
-            return False
-        
-        
-        # Define callback to send audio directly to Twilio
-        async def send_audio_to_twilio(audio_bytes):
-            try:
-                # Audio is already in μ-law format
-                encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                media_message = {
-                    "event": "media",
-                    "streamSid": stream_sid,
-                    "media": {"payload": encoded_audio}
-                }
-                await websocket.send_text(json.dumps(media_message))
-            except Exception as e:
-                logger.error(f"Error sending welcome audio to Twilio: {str(e)}")
-        
-        # Connect to ElevenLabs with the callback
-        await ws_tts_service.connect(send_audio_to_twilio)
-        
-        # Split welcome into chunks for better streaming
-        welcome_chunks = [
-            "Hello! ",
-            "Welcome to Callsure AI. ",
-            "How can I help you today?"
-        ]
-        
-        for chunk in welcome_chunks:
-            await ws_tts_service.stream_text(chunk, trigger_gen=True)
-            await asyncio.sleep(0.1)  # Small delay between chunks
-        
-        # Send empty text to signal end
-        await asyncio.sleep(0.5)  # Allow final audio to generate
-        await ws_tts_service.stream_text("", trigger_gen=False)
-        
-        # Close connection
-        await ws_tts_service.close()
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error sending welcome message: {str(e)}")
-        return False
 
 
 async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
@@ -440,9 +391,9 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
 
                             await asyncio.sleep(0.5)
                             if not welcome_sent:
+                                # Fall back to the normal method if direct welcome fails
                                 welcome_data = {"type": "message", "message": "__SYSTEM_WELCOME__", "source": "twilio"}
-                                await process_buffered_message(connection_manager, client_id, welcome_data, app)
-                                is_system_speaking = False
+                                asyncio.create_task(process_buffered_message(connection_manager, client_id, welcome_data, app))
                                 welcome_sent = True
 
                         
