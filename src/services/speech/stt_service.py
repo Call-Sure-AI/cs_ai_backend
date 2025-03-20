@@ -147,16 +147,14 @@ class SpeechToTextService:
             params = {
                 "model": "nova-3",
                 "sample_rate": "8000",
-                "encoding": "mulaw",
+                "encoding": "mulaw-8k",  # Try this instead of "mulaw"
                 "channels": "1",
-                "punctuate": "true", 
+                "punctuate": "true",
                 "smart_format": "true",
                 "filler_words": "false",
                 "endpointing": "true",
-                "vad_turnoff": "500",       # Add this - shorter silence before considering speech finished
-                "interim_results": "true",  # Add this - get partial results faster
-                "utterance_end_ms": "500",  # Add this - shorter utterance boundaries
-                "alternatives": "1"         # Add this - just need one transcription alternative
+                "detection_mode": "continuous", # Add this to continuously detect speech
+                "vad_sensitivity": "0.5"        # Add this to adjust voice activity detection
             }
             
             # Construct the URL properly
