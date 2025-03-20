@@ -38,8 +38,9 @@ class WebSocketTTSService:
         """Connect to ElevenLabs WebSocket API following their protocol"""
         async with self.connection_lock:
             # Reset state
-            if self.is_connected:
-                await self.close()
+            if self.is_connected and self.ws and not self.ws.closed:
+                self.audio_callback = audio_callback
+                return True
                 
             self.audio_callback = audio_callback
             self.is_closed = False
@@ -260,7 +261,7 @@ class WebSocketTTSService:
                 await asyncio.wait_for(self.ws.send_json(message), timeout=5.0)
                 
                 # Small delay between chunks to allow processing
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.01)
                 
             return True
                 

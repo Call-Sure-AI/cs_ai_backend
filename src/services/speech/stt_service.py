@@ -70,7 +70,7 @@ class SpeechToTextService:
             should_process = False
             
             # Standard threshold-based processing
-            if buffer_size > 6000 and not self.active_sessions[session_id]["processing"]:
+            if buffer_size > 3000 and not self.active_sessions[session_id]["processing"]:
                 should_process = True
                 
             # Energy-based processing - process immediately if we detect speech
