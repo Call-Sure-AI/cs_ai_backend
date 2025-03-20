@@ -18,6 +18,7 @@ from config.settings import settings
 from database.models import Company, Agent
 import uuid
 from services.speech.tts_service import WebSocketTTSService
+from services.speech.deepgram_stt_service import DeepgramSTTService
 
 # Initialize router and logging
 router = APIRouter()
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 vector_store = QdrantService()
 webrtc_manager = WebRTCManager()
 ws_tts_service = WebSocketTTSService()
+deepgram_stt = DeepgramSTTService()
+
 
 import asyncio
 import subprocess
@@ -70,7 +73,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.error(f"No stream SID found for client {client_id}")
             return
         
-        # Initialize WebSocket TTS service
+        
         
         # Define callback to send audio directly to Twilio
         async def send_audio_to_twilio(audio_bytes):
@@ -192,7 +195,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
     connected = False
     websocket_closed = False
 
-    stt_service = SpeechToTextService()
+    stt_service = deepgram_stt
     buffer_reset_interval = 30
     last_buffer_reset = time.time()
     last_message_time = time.time()
@@ -272,51 +275,46 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
         # connected = True
 
         # Define transcription handler (capture app via nonlocal)
+        
         async def handle_transcription(session_id, transcribed_text):
-            nonlocal is_processing, last_processed_time, app, last_speech_time, user_speech_buffer, is_system_speaking
+            nonlocal is_processing, last_processed_time, app, is_system_speaking
             
-            # Update speech timing
-            last_speech_time = time.time()
-            
-            if transcribed_text.strip():
-                # Add to speech buffer if it's not already there
-                if transcribed_text not in user_speech_buffer:
-                    user_speech_buffer.append(transcribed_text)
-                    logger.info(f"[{connection_id}] Added speech to buffer: '{transcribed_text}'")
-                
-                # If system is speaking, stop it to handle barge-in
-                if is_system_speaking:
-                    should_stop_speaking.set()
-                    is_system_speaking = False
-                    logger.info(f"[{connection_id}] User barge-in detected - stopping system speech")
-                
-                # Don't process immediately - wait for silence
+            # If transcribed_text is empty, it means Deepgram has detected end of speech
+            # or has completed utterances to process
+            if not transcribed_text.strip():
+                # Only process if we're not already processing and not currently speaking
+                if not is_processing and not is_system_speaking:
+                    # Get all completed speech
+                    combined_speech = await stt_service.get_completed_speech(session_id)
+                    
+                    if combined_speech.strip():
+                        is_processing = True
+                        last_processed_time = time.time()
+                        
+                        logger.info(f"[{connection_id}] Processing completed speech: '{combined_speech}'")
+                        
+                        message_data = {
+                            "type": "message",
+                            "message": combined_speech,
+                            "source": "twilio"
+                        }
+                        
+                        # Process the speech
+                        asyncio.create_task(
+                            process_message_with_retries(connection_manager, client_id, message_data, app)
+                        )
                 return
             
-            # Only process after a period of silence following speech
-            current_time = time.time()
-            silence_duration = current_time - last_speech_time
+            # If we get here, we have actual transcribed text from initial processing
+            # Update timing info
+            last_processed_time = time.time()
             
-            if not is_processing and user_speech_buffer and silence_duration >= speech_timeout:
-                is_processing = True
-                last_processed_time = current_time
-                
-                # Combine all speech fragments
-                combined_speech = " ".join(user_speech_buffer)
-                user_speech_buffer = []  # Clear buffer
-                
-                logger.info(f"[{connection_id}] Processing combined speech: '{combined_speech}'")
-                
-                message_data = {
-                    "type": "message",
-                    "message": combined_speech,
-                    "source": "twilio"
-                }
-                
-                # Process the speech
-                asyncio.create_task(
-                    process_message_with_retries(connection_manager, client_id, message_data, app)
-                )
+            # If system is speaking, stop it to handle barge-in
+            if is_system_speaking:
+                should_stop_speaking.set()
+                is_system_speaking = False
+                logger.info(f"[{connection_id}] User barge-in detected - stopping system speech")
+        
         
         
         # Main processing loop
@@ -409,7 +407,7 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                                     energy_level = (non_zero / len(audio_bytes)) * 100
                                     
                                     # If energy is high enough, consider it speech
-                                    if energy_level > min_speech_energy and is_system_speaking:
+                                    if energy_level > min_speech_energy:
                                         logger.info(f"[{connection_id}] Potential user barge-in detected")
                                         should_stop_speaking.set()
                                         is_system_speaking = False
@@ -427,9 +425,13 @@ async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company
                             await stt_service.process_final_buffer(client_id, handle_transcription)
                             websocket_closed = True
                             break
+                        
                     except json.JSONDecodeError:
                         logger.warning(f"[{connection_id}] Non-JSON text received")
                 # (Heartbeat and silence checks omitted for brevity.)
+                if not is_processing and await stt_service.detect_silence(client_id, silence_threshold):
+                    await handle_transcription(client_id, "")
+
             except asyncio.TimeoutError:
                 # (Heartbeat logic, if any, goes here.)
                 pass
