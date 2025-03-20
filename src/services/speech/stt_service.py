@@ -75,10 +75,16 @@ class SpeechToTextService:
                 
             # Energy-based processing - process immediately if we detect speech
             energy_avg = sum(self.active_sessions[session_id].get("energy_levels", [0])) / max(len(self.active_sessions[session_id].get("energy_levels", [1])), 1)
-            if energy_avg > 15.0 and buffer_size > 4000 and not self.active_sessions[session_id]["processing"]:
+            if energy_avg > 5.0 and buffer_size > 2000 and not self.active_sessions[session_id]["processing"]:
                 should_process = True
             
             logger.debug(f"Session {session_id} energy_avg: {energy_avg:.2f}, buffer_size: {buffer_size}")
+            active_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
+            silent_bytes = len(audio_data) - active_bytes
+            energy_ratio = active_bytes / max(len(audio_data), 1) * 100
+            logger.debug(f"Audio quality: {len(audio_data)} bytes, {energy_ratio:.2f}% energy, {active_bytes} active, {silent_bytes} silent")
+    
+            
             
             if should_process:
                 self.active_sessions[session_id]["processing"] = True
@@ -121,13 +127,14 @@ class SpeechToTextService:
             
             # Build the URL with proper query parameters for mulaw audio
             params = {
-                "model": "nova-2",
+                "model": "nova-3",  # Upgrade to latest model
                 "sample_rate": "8000",
                 "encoding": "mulaw",
                 "channels": "1",
                 "punctuate": "true",
                 "smart_format": "true",
-                "filler_words": "false",  # Ignore filler words like "um"
+                "filler_words": "false",
+                "endpointing": "true"  # Add endpointing for better speech detection
             }
             
             # Construct the URL properly
@@ -156,6 +163,11 @@ class SpeechToTextService:
                     
                     # Log the full response for debugging
                     logger.debug(f"Deepgram response: {json.dumps(result)}")
+                    
+                    if result and "results" in result:
+                        # Check if results contains useful diagnostic info
+                        if "warnings" in result:
+                            logger.warning(f"Deepgram warnings: {result['warnings']}")
                     
                     # Extract the transcript from the response
                     if result and "results" in result and "channels" in result["results"]:
