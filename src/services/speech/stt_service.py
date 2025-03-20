@@ -50,8 +50,7 @@ class SpeechToTextService:
             if self.active_sessions[session_id]["chunk_count"] % 100 == 0:
                 logger.info(f"Audio buffer for {session_id}: {buffer_size} bytes after {self.active_sessions[session_id]['chunk_count']} chunks")
             
-            # Reduce buffer threshold from 16000 to 8000 bytes (~0.5s instead of ~1s)
-            # Only process if buffer has meaningful data and not already processing
+            # Reduce buffer threshold from 16000 to 8000 bytes
             if buffer_size > 8000 and not self.active_sessions[session_id]["processing"]:
                 self.active_sessions[session_id]["processing"] = True
                 
@@ -81,7 +80,6 @@ class SpeechToTextService:
         except Exception as e:
             logger.error(f"Error processing audio chunk for session {session_id}: {str(e)}")
             return False
-    
            
     async def _recognize_speech(self, audio_data: bytes, session_id: str) -> Optional[str]:
         """Convert audio data to text using Deepgram"""
@@ -172,9 +170,8 @@ class SpeechToTextService:
             # Only process if we have enough data and not already processing
             buffer_size = len(self.active_sessions[session_id]["buffer"])
             
-            # Reduce threshold from 8000 to 4000 bytes (~0.25 second)
+            # Reduce threshold from 8000 to 4000 bytes for faster processing
             if buffer_size > 4000 and not self.active_sessions[session_id]["processing"]:
-                # Minimum threshold reduced for faster response
                 self.active_sessions[session_id]["processing"] = True
                 
                 # Get buffer copy
@@ -197,8 +194,7 @@ class SpeechToTextService:
             
         except Exception as e:
             logger.error(f"Error processing final buffer for session {session_id}: {str(e)}")
-            return False
-        
+            return False   
         
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
@@ -225,33 +221,8 @@ class SpeechToTextService:
         current_time = time.time()
         last_activity = self.active_sessions[session_id]["last_activity"]
         
-        # Add energy level detection to better identify end of speech
-        if "recent_energies" not in self.active_sessions[session_id]:
-            self.active_sessions[session_id]["recent_energies"] = []
-        
-        # Calculate energy from buffer (if available)
-        buffer_size = len(self.active_sessions[session_id]["buffer"])
-        if buffer_size > 0:
-            # Simple energy calculation - count non-silence bytes
-            # For μ-law encoding, silence is typically around value 128
-            audio_data = self.active_sessions[session_id]["buffer"]
-            non_silent_bytes = sum(1 for b in audio_data if abs(b - 128) > 10)
-            energy_level = (non_silent_bytes / buffer_size) * 100
-            
-            # Keep a rolling window of recent energy levels
-            energies = self.active_sessions[session_id]["recent_energies"]
-            energies.append(energy_level)
-            if len(energies) > 5:  # Keep last 5 energy readings
-                energies.pop(0)
-            
-            # If energy has been consistently low and we've had no activity for the threshold
-            avg_energy = sum(energies) / len(energies) if energies else 0
-            if avg_energy < 5.0 and (current_time - last_activity) >= silence_threshold_sec:
-                return True
-        
-        # Fall back to time-based detection if energy calculation isn't conclusive
+        # Shorter silence threshold (was 2.0, now 0.8 seconds)
         return (current_time - last_activity) >= silence_threshold_sec
-   
    
     def clear_buffer(self, session_id: str):
         """Clear the audio buffer for a specific session"""

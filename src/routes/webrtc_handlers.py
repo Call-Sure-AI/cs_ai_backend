@@ -222,8 +222,8 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Create new TTS service for this response
         tts_service = WebSocketTTSService()
         
-        # Start TTS connection in parallel with getting the answer
-        tts_connection_task = asyncio.create_task(tts_service.connect(send_audio_to_twilio))
+        # Connect to TTS service
+        await tts_service.connect(send_audio_to_twilio)
         
         # Collect the full response for logging
         full_response_text = ""
@@ -231,9 +231,6 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         
         # Process tokens from the chain
         logger.info(f"Getting answer for input: '{msg_data.get('message', '')}'")
-        
-        # Ensure TTS connection is ready
-        await tts_connection_task
         
         # Stream response with sentence-by-sentence TTS
         async for token in rag_service.get_answer_with_chain(
@@ -252,15 +249,18 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             # Check if we have a complete sentence to send to TTS
             if any(char in token for char in ".!?"):
                 if current_sentence.strip():
-                    # Create a task to stream the sentence to TTS
-                    asyncio.create_task(tts_service.stream_text(current_sentence))
+                    # Process sentence immediately to reduce latency
+                    await tts_service.stream_text(current_sentence)
                     current_sentence = ""
             
             # If we have a long partial sentence, send it anyway
             elif len(current_sentence) > 80:
                 if current_sentence.strip():
-                    asyncio.create_task(tts_service.stream_text(current_sentence))
+                    await tts_service.stream_text(current_sentence)
                     current_sentence = ""
+                    
+            # Small delay to prevent overwhelming the WebSocket
+            await asyncio.sleep(0.01)
 
         # Send any remaining text
         if current_sentence.strip():
@@ -285,7 +285,6 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         if 'tts_service' in locals():
             await tts_service.close()
         return None
-
 
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
