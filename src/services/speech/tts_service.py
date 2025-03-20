@@ -41,9 +41,7 @@ class WebSocketTTSService:
         await self.close()
     
     async def connect(self, audio_callback: Callable[[bytes], Any] = None):
-        """
-        Connect to ElevenLabs WebSocket API
-        """
+        """Connect to ElevenLabs WebSocket API with connection pooling"""
         async with self.connection_lock:
             # Reset state
             if self.is_connected:
@@ -51,14 +49,32 @@ class WebSocketTTSService:
                 
             self.audio_callback = audio_callback
             self.is_closed = False
+            self.pool_key = f"{self.voice_id}"
             
             try:
+                # Check if we have a pooled connection we can reuse
+                async with self._pool_lock:
+                    pool_entry = self._connection_pool.get(self.pool_key)
+                    if pool_entry and not pool_entry['is_closed'] and time.time() - pool_entry['last_used'] < 60:
+                        # Reuse existing connection if it's less than 60 seconds old
+                        logger.info("Reusing existing ElevenLabs connection from pool")
+                        self.session = pool_entry['session']
+                        self.ws = pool_entry['ws']
+                        pool_entry['last_used'] = time.time()
+                        pool_entry['ref_count'] += 1
+                        
+                        # Start listener task for this instance
+                        self.listener_task = asyncio.create_task(self._listen_for_audio())
+                        self.is_connected = True
+                        return True
+                
+                # If we get here, we need a new connection
                 # Construct WebSocket URL with parameters
                 url = f"{self.base_url}/{self.voice_id}/stream-input"
                 params = {
-                    "model_id": "eleven_turbo_v2",  # Use turbo model
-                    "output_format": "pcm_44100",   # Use PCM format (supported by ElevenLabs)
-                    "optimize_streaming_latency": "3",  # Max optimization
+                    "model_id": "eleven_turbo_v2",
+                    "output_format": "pcm_44100",
+                    "optimize_streaming_latency": "3",
                 }
                 
                 # Add query params to URL
@@ -75,8 +91,8 @@ class WebSocketTTSService:
                 self.ws = await self.session.ws_connect(
                     full_url, 
                     headers=headers,
-                    heartbeat=30.0,  # Keep the connection alive with heartbeats
-                    receive_timeout=60.0  # Longer timeout
+                    heartbeat=30.0,
+                    receive_timeout=60.0
                 )
                 
                 # Start listener task
@@ -84,27 +100,38 @@ class WebSocketTTSService:
                 
                 # Initialize connection with empty text
                 voice_settings = {
-                    "stability": 0.3,  # Lower for faster responses
-                    "similarity_boost": 0.5,  # Lower for faster responses 
-                    "speed": 1.0,  # Normal speed
+                    "stability": 0.3,
+                    "similarity_boost": 0.5,
+                    "speed": 1.0,
                 }
                 
                 # Send initial message
                 init_message = {
-                    "text": " ",  # Required initial space
+                    "text": " ",
                     "voice_settings": voice_settings
                 }
                 
                 await self.ws.send_json(init_message)
                 self.is_connected = True
-                logger.info("Connected to ElevenLabs WebSocket API")
                 
+                # Add to pool
+                async with self._pool_lock:
+                    self._connection_pool[self.pool_key] = {
+                        'session': self.session,
+                        'ws': self.ws,
+                        'last_used': time.time(),
+                        'is_closed': False,
+                        'ref_count': 1
+                    }
+                
+                logger.info("Connected to ElevenLabs WebSocket API")
                 return True
                 
             except Exception as e:
                 logger.error(f"Error connecting to ElevenLabs WebSocket: {str(e)}")
                 await self._cleanup()
                 return False
+    
     
     async def _listen_for_audio(self):
         """Listen for audio chunks from ElevenLabs"""
@@ -259,7 +286,7 @@ class WebSocketTTSService:
                 logger.error(f"Error closing session: {str(e)}")
     
     async def close(self):
-        """Close the WebSocket connection"""
+        """Close the WebSocket connection with connection pooling"""
         if self.is_closed:
             return  # Already closed, avoid duplicate close
             
@@ -269,14 +296,43 @@ class WebSocketTTSService:
         try:
             if self.is_connected and self.ws and not self.ws.closed:
                 await self.stream_end()
-                await asyncio.sleep(0.5)  # Allow time for processing
+                await asyncio.sleep(0.2)  # Allow time for processing
         except Exception as e:
             logger.error(f"Error during stream end: {str(e)}")
         
-        # Clean up resources
-        await self._cleanup()
+        # Update pool reference count
+        if self.pool_key:
+            async with self._pool_lock:
+                pool_entry = self._connection_pool.get(self.pool_key)
+                if pool_entry:
+                    pool_entry['ref_count'] -= 1
+                    
+                    # Only clean up if there are no more references
+                    if pool_entry['ref_count'] <= 0:
+                        pool_entry['is_closed'] = True
+                        await self._cleanup()
+                        # Remove from pool
+                        self._connection_pool.pop(self.pool_key, None)
+                    else:
+                        # Other instances are still using this connection
+                        logger.info(f"Keeping pooled connection for {self.pool_key}, ref count: {pool_entry['ref_count']}")
+                        
+                        # Just clean up our instance variables
+                        self.ws = None
+                        self.session = None
+                        if self.listener_task and not self.listener_task.done():
+                            self.listener_task.cancel()
+                        self.listener_task = None
+                        
+                        logger.info("Released ElevenLabs WebSocket connection back to pool")
+                        return
+        else:
+            # No pool key, just clean up
+            await self._cleanup()
+            
         logger.info("Closed ElevenLabs WebSocket connection")
-        
+    
+       
     async def get_audio(self, timeout=5.0):
         """Get next audio chunk from queue with timeout"""
         try:

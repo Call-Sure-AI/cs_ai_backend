@@ -44,8 +44,128 @@ import logging
 import os
 import tempfile
 
+# async def process_buffered_message(manager, client_id, msg_data, app):
+#     """Simple processor for text messages, converts to speech and sends to Twilio."""
+#     try:
+#         # Get WebSocket connection
+#         ws = manager.active_connections.get(client_id)
+#         if not ws or manager.websocket_is_closed(ws):
+#             logger.warning(f"Client {client_id} disconnected before processing")
+#             return
+
+#         # Get agent and resources
+#         agent_res = manager.agent_resources.get(client_id)
+#         if not agent_res:
+#             logger.error(f"No agent resources for client {client_id}")
+#             return
+
+#         chain = agent_res.get('chain')
+#         rag_service = agent_res.get('rag_service')
+#         if not chain or not rag_service:
+#             logger.error(f"Missing resources in agent for client {client_id}")
+#             return
+
+#         # Get the stream SID for sending audio
+#         stream_sid = app.state.stream_sids.get(client_id, "")
+#         if not stream_sid:
+#             logger.error(f"No stream SID found for client {client_id}")
+#             return
+        
+#         # Function to send audio to Twilio
+#         async def send_audio_to_twilio(audio_bytes):
+#             try:
+#                 logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
+#                 # Audio from ElevenLabs is already in μ-law format
+#                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+#                 media_message = {
+#                     "event": "media",
+#                     "streamSid": stream_sid,
+#                     "media": {"payload": encoded_audio}
+#                 }
+#                 await ws.send_text(json.dumps(media_message))
+#                 logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
+#             except Exception as e:
+#                 logger.error(f"Error sending audio to Twilio: {str(e)}")
+                
+#         # Create new TTS service for this response
+#         tts_service = WebSocketTTSService()
+        
+#         await tts_service.connect(send_audio_to_twilio)
+        
+#         # Collect the full response for logging
+#         full_response_text = ""
+#         current_sentence = ""
+        
+#         # Track last chunk time and buffer size to determine when to stream
+#         last_chunk_time = time.time()
+#         buffer_size = 0
+
+#         # Process tokens from the chain
+#         logger.info(f"Getting answer for input: '{msg_data.get('message', '')}'")
+#         async for token in rag_service.get_answer_with_chain(
+#             chain=chain,
+#             question=msg_data.get('message', ''),
+#             company_name="Callsure AI"
+#         ):
+#             # Add token to text
+#             full_response_text += token
+#             current_sentence += token
+#             buffer_size += len(token)
+            
+#             # Stream text to client UI if connected
+#             if not manager.websocket_is_closed(ws):
+#                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
+            
+#             # Stream text to ElevenLabs in chunks
+#             current_time = time.time()
+#             time_since_last_chunk = current_time - last_chunk_time
+            
+#             # Send chunks on punctuation, buffer size, or time threshold
+#             is_chunk_boundary = (
+#                 any(char in token for char in ".!?,;") or  # Punctuation
+#                 buffer_size >= 15 or                       # Buffer size
+#                 time_since_last_chunk >= 0.2               # Time threshold
+#             )
+            
+#             if is_chunk_boundary:
+#                 # Stream text
+#                 if current_sentence.strip():
+#                     logger.debug(f"Streaming chunk: '{current_sentence}'")
+#                     await tts_service.stream_text(current_sentence)
+#                     current_sentence = ""
+#                     buffer_size = 0
+#                     last_chunk_time = current_time
+                
+#                 # Small delay to allow processing
+#                 await asyncio.sleep(0.05)
+
+#         # Send any remaining text
+#         if current_sentence.strip():
+#             await tts_service.stream_text(current_sentence)
+        
+#         # Give time for final audio to generate
+#         await asyncio.sleep(0.5)
+        
+#         # Close the connection gracefully
+#         try:
+#             await tts_service.stream_end()
+#             await asyncio.sleep(0.2)
+#             await tts_service.close()
+#         except Exception as e:
+#             logger.error(f"Error during TTS cleanup: {str(e)}")
+        
+#         logger.info(f"Completed response: {full_response_text}")
+#         return full_response_text
+
+#     except Exception as e:
+#         logger.error(f"Error processing message: {str(e)}")
+#         if 'tts_service' in locals():
+#             await tts_service.close()
+#         return None   
+    
+
 async def process_buffered_message(manager, client_id, msg_data, app):
-    """Simple processor for text messages, converts to speech and sends to Twilio."""
+    """Process messages with improved streaming."""
     try:
         # Get WebSocket connection
         ws = manager.active_connections.get(client_id)
@@ -74,7 +194,16 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_bytes):
             try:
-                logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
+                # Only log the first chunk and every 5th chunk thereafter to reduce log volume
+                is_first_chunk = not hasattr(send_audio_to_twilio, "chunk_count")
+                if not hasattr(send_audio_to_twilio, "chunk_count"):
+                    send_audio_to_twilio.chunk_count = 0
+                
+                send_audio_to_twilio.chunk_count += 1
+                
+                if is_first_chunk or send_audio_to_twilio.chunk_count % 5 == 0:
+                    logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
+                
                 # Audio from ElevenLabs is already in μ-law format
                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
                 media_message = {
@@ -83,25 +212,30 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                     "media": {"payload": encoded_audio}
                 }
                 await ws.send_text(json.dumps(media_message))
-                logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
+                
+                # Only log occasionally to reduce overhead
+                if is_first_chunk or send_audio_to_twilio.chunk_count % 5 == 0:
+                    logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
                 
         # Create new TTS service for this response
         tts_service = WebSocketTTSService()
         
-        await tts_service.connect(send_audio_to_twilio)
+        # Start TTS connection in parallel with getting the answer
+        tts_connection_task = asyncio.create_task(tts_service.connect(send_audio_to_twilio))
         
         # Collect the full response for logging
         full_response_text = ""
         current_sentence = ""
         
-        # Track last chunk time and buffer size to determine when to stream
-        last_chunk_time = time.time()
-        buffer_size = 0
-
         # Process tokens from the chain
         logger.info(f"Getting answer for input: '{msg_data.get('message', '')}'")
+        
+        # Ensure TTS connection is ready
+        await tts_connection_task
+        
+        # Stream response with sentence-by-sentence TTS
         async for token in rag_service.get_answer_with_chain(
             chain=chain,
             question=msg_data.get('message', ''),
@@ -110,40 +244,29 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             # Add token to text
             full_response_text += token
             current_sentence += token
-            buffer_size += len(token)
             
             # Stream text to client UI if connected
             if not manager.websocket_is_closed(ws):
                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
             
-            # Stream text to ElevenLabs in chunks
-            current_time = time.time()
-            time_since_last_chunk = current_time - last_chunk_time
-            
-            # Send chunks on punctuation, buffer size, or time threshold
-            is_chunk_boundary = (
-                any(char in token for char in ".!?,;") or  # Punctuation
-                buffer_size >= 15 or                       # Buffer size
-                time_since_last_chunk >= 0.2               # Time threshold
-            )
-            
-            if is_chunk_boundary:
-                # Stream text
+            # Check if we have a complete sentence to send to TTS
+            if any(char in token for char in ".!?"):
                 if current_sentence.strip():
-                    logger.debug(f"Streaming chunk: '{current_sentence}'")
-                    await tts_service.stream_text(current_sentence)
+                    # Create a task to stream the sentence to TTS
+                    asyncio.create_task(tts_service.stream_text(current_sentence))
                     current_sentence = ""
-                    buffer_size = 0
-                    last_chunk_time = current_time
-                
-                # Small delay to allow processing
-                await asyncio.sleep(0.05)
+            
+            # If we have a long partial sentence, send it anyway
+            elif len(current_sentence) > 80:
+                if current_sentence.strip():
+                    asyncio.create_task(tts_service.stream_text(current_sentence))
+                    current_sentence = ""
 
         # Send any remaining text
         if current_sentence.strip():
             await tts_service.stream_text(current_sentence)
         
-        # Give time for final audio to generate
+        # Wait for all audio to finish generating
         await asyncio.sleep(0.5)
         
         # Close the connection gracefully
@@ -161,8 +284,9 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         logger.error(f"Error processing message: {str(e)}")
         if 'tts_service' in locals():
             await tts_service.close()
-        return None   
-    
+        return None
+
+
 async def process_message_with_retries(manager, cid, msg_data, app, max_retries=3):
     retries = 0
     success = False
