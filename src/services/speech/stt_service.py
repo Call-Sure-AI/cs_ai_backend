@@ -70,13 +70,15 @@ class SpeechToTextService:
             should_process = False
             
             # Standard threshold-based processing
-            if buffer_size > 3000 and not self.active_sessions[session_id]["processing"]:
+            if buffer_size > 2000 and not self.active_sessions[session_id]["processing"]:
                 should_process = True
                 
             # Energy-based processing - process immediately if we detect speech
             energy_avg = sum(self.active_sessions[session_id].get("energy_levels", [0])) / max(len(self.active_sessions[session_id].get("energy_levels", [1])), 1)
             if energy_avg > 15.0 and buffer_size > 4000 and not self.active_sessions[session_id]["processing"]:
                 should_process = True
+            
+            logger.debug(f"Session {session_id} energy_avg: {energy_avg:.2f}, buffer_size: {buffer_size}")
             
             if should_process:
                 self.active_sessions[session_id]["processing"] = True
