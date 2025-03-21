@@ -35,7 +35,7 @@ class DeepgramSpeechService:
         self.transcript_parts = {}
             
     async def initialize_session(self, session_id: str, 
-                           transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
+                        transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
         """Initialize a new speech recognition session with Deepgram"""
         try:
             # Configure Deepgram client options with keepalive
@@ -50,8 +50,8 @@ class DeepgramSpeechService:
             self.transcript_parts[session_id] = []
             
             # Create the live transcription connection
-            # Note: Based on latest docs, use asyncwebsocket for async implementations
-            dg_connection = dg_client.listen.asyncwebsocket.v("1")
+            # Updated: Use live.listen for latest SDK
+            dg_connection = dg_client.listen.live.v("1")
             
             # Define event handlers
             async def on_message(result, **kwargs):
@@ -100,11 +100,10 @@ class DeepgramSpeechService:
                 sample_rate=8000
             )
             
-            # Start the connection - note this returns a boolean
-            # Per docs, we don't use await here directly since this is not async in current SDK
-            success = await dg_connection.start(options)
+            # Start the connection - updated to handle async properly
+            connection_successful = await dg_connection.start(options)
             
-            if not success:
+            if not connection_successful:
                 logger.error(f"Failed to connect to Deepgram for session {session_id}")
                 return False
                 
@@ -116,7 +115,8 @@ class DeepgramSpeechService:
         except Exception as e:
             logger.error(f"Error initializing Deepgram session for {session_id}: {str(e)}")
             return False
-        
+    
+      
     async def process_audio_chunk(self, session_id: str, audio_data: bytes):
         """Process an audio chunk using Deepgram's live streaming API"""
         try:
