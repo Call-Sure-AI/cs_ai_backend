@@ -205,14 +205,18 @@ class DeepgramWebSocketService:
         try:
             # Decode base64 audio to raw bytes
             audio_data = base64.b64decode(base64_payload)
+            audio_bytes_len = len(audio_data)
+            logger.debug(f"Decoded audio length: {audio_bytes_len} bytes for {session_id}")
 
             # Ensure that the audio is not silent
             silence_level = 128  # Adjust threshold if needed
             non_silent_bytes = [abs(b - silence_level) for b in audio_data]
             
             # Calculate active bytes
-            threshold = 10  # Adjust to fine-tune silence detection
+            threshold = 3  # Adjust to fine-tune silence detection
             active_bytes = sum(1 for b in non_silent_bytes if b > threshold)
+            
+            logger.debug(f"Active bytes: {active_bytes}/{audio_bytes_len} for {session_id} (threshold: {threshold})")
             
             # If the audio is silent, skip it
             if active_bytes == 0:
