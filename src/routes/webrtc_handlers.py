@@ -18,8 +18,8 @@ from config.settings import settings
 from database.models import Company, Agent
 import uuid
 from services.speech.tts_service import WebSocketTTSService
-from services.speech.deepgram_speech_service import DeepgramSpeechService
-# from services.speech.deepgram_stt_service import DeepgramSTTService
+from services.speech.deepgram_ws_service import DeepgramWebSocketService
+
 
 # Initialize router and logging
 router = APIRouter()
@@ -45,125 +45,7 @@ import logging
 import os
 import tempfile
 
-# async def process_buffered_message(manager, client_id, msg_data, app):
-#     """Simple processor for text messages, converts to speech and sends to Twilio."""
-#     try:
-#         # Get WebSocket connection
-#         ws = manager.active_connections.get(client_id)
-#         if not ws or manager.websocket_is_closed(ws):
-#             logger.warning(f"Client {client_id} disconnected before processing")
-#             return
 
-#         # Get agent and resources
-#         agent_res = manager.agent_resources.get(client_id)
-#         if not agent_res:
-#             logger.error(f"No agent resources for client {client_id}")
-#             return
-
-#         chain = agent_res.get('chain')
-#         rag_service = agent_res.get('rag_service')
-#         if not chain or not rag_service:
-#             logger.error(f"Missing resources in agent for client {client_id}")
-#             return
-
-#         # Get the stream SID for sending audio
-#         stream_sid = app.state.stream_sids.get(client_id, "")
-#         if not stream_sid:
-#             logger.error(f"No stream SID found for client {client_id}")
-#             return
-        
-#         # Function to send audio to Twilio
-#         async def send_audio_to_twilio(audio_bytes):
-#             try:
-#                 logger.info(f"Received {len(audio_bytes)} bytes of audio from ElevenLabs")
-#                 # Audio from ElevenLabs is already in μ-law format
-#                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
-#                 media_message = {
-#                     "event": "media",
-#                     "streamSid": stream_sid,
-#                     "media": {"payload": encoded_audio}
-#                 }
-#                 await ws.send_text(json.dumps(media_message))
-#                 logger.info(f"Sent audio chunk to Twilio: {len(encoded_audio)} bytes encoded payload")
-#             except Exception as e:
-#                 logger.error(f"Error sending audio to Twilio: {str(e)}")
-                
-#         # Create new TTS service for this response
-#         tts_service = WebSocketTTSService()
-        
-#         await tts_service.connect(send_audio_to_twilio)
-        
-#         # Collect the full response for logging
-#         full_response_text = ""
-#         current_sentence = ""
-        
-#         # Track last chunk time and buffer size to determine when to stream
-#         last_chunk_time = time.time()
-#         buffer_size = 0
-
-#         # Process tokens from the chain
-#         logger.info(f"Getting answer for input: '{msg_data.get('message', '')}'")
-#         async for token in rag_service.get_answer_with_chain(
-#             chain=chain,
-#             question=msg_data.get('message', ''),
-#             company_name="Callsure AI"
-#         ):
-#             # Add token to text
-#             full_response_text += token
-#             current_sentence += token
-#             buffer_size += len(token)
-            
-#             # Stream text to client UI if connected
-#             if not manager.websocket_is_closed(ws):
-#                 await manager.send_json(ws, {"type": "stream_chunk", "text_content": token})
-            
-#             # Stream text to ElevenLabs in chunks
-#             current_time = time.time()
-#             time_since_last_chunk = current_time - last_chunk_time
-            
-#             # Send chunks on punctuation, buffer size, or time threshold
-#             is_chunk_boundary = (
-#                 any(char in token for char in ".!?,;") or  # Punctuation
-#                 buffer_size >= 15 or                       # Buffer size
-#                 time_since_last_chunk >= 0.2               # Time threshold
-#             )
-            
-#             if is_chunk_boundary:
-#                 # Stream text
-#                 if current_sentence.strip():
-#                     logger.debug(f"Streaming chunk: '{current_sentence}'")
-#                     await tts_service.stream_text(current_sentence)
-#                     current_sentence = ""
-#                     buffer_size = 0
-#                     last_chunk_time = current_time
-                
-#                 # Small delay to allow processing
-#                 await asyncio.sleep(0.05)
-
-#         # Send any remaining text
-#         if current_sentence.strip():
-#             await tts_service.stream_text(current_sentence)
-        
-#         # Give time for final audio to generate
-#         await asyncio.sleep(0.5)
-        
-#         # Close the connection gracefully
-#         try:
-#             await tts_service.stream_end()
-#             await asyncio.sleep(0.2)
-#             await tts_service.close()
-#         except Exception as e:
-#             logger.error(f"Error during TTS cleanup: {str(e)}")
-        
-#         logger.info(f"Completed response: {full_response_text}")
-#         return full_response_text
-
-#     except Exception as e:
-#         logger.error(f"Error processing message: {str(e)}")
-#         if 'tts_service' in locals():
-#             await tts_service.close()
-#         return None   
-    
 
 
 async def process_buffered_message(manager, client_id, msg_data, app):
@@ -338,278 +220,8 @@ async def process_message_with_retries(manager, cid, msg_data, app, max_retries=
 
 
 
-
-# async def handle_twilio_media_stream(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
-#     """Handler for Twilio Media Streams within the WebRTC signaling endpoint."""
-#     app = websocket.app  # Get FastAPI app instance
-#     connection_manager = app.state.connection_manager
-#     client_id = peer_id
-#     connection_id = str(uuid.uuid4())[:8]
-#     message_count = 0
-#     audio_chunks = 0
-#     connected = False
-#     websocket_closed = False
-
-#     stt_service = deepgram_stt
-#     buffer_reset_interval = 30
-#     last_buffer_reset = time.time()
-#     last_message_time = time.time()
-#     is_processing = False
-#     last_processed_time = time.time()
-#     silence_threshold = 1.5
-#     welcome_sent = False
-    
-    
-#     # Add variables for barge-in handling
-#     is_system_speaking = False
-#     should_stop_speaking = asyncio.Event()
-#     user_speech_buffer = []
-#     last_speech_time = time.time()
-#     speech_timeout = 1.0  # Time to wait after speech before processing
-#     min_speech_energy = 3.0  # Minimum energy level to consider as speech
-
-#     try:
-#         logger.info(f"[{connection_id}] Handling Twilio Media Stream for {peer_id}")
-
-#         # (Assume company and agent initialization occur before this handler is called.)
-#         connection_manager = webrtc_manager.connection_manager
-#         if not connection_manager:
-#             logger.error(f"[{connection_id}] Connection manager not found in app state!")
-#             await websocket.close(code=1011)
-#             websocket_closed = True
-#             return
-            
-#         # Initialize company for Twilio calls
-#         company = db.query(Company).filter_by(api_key=company_api_key).first()
-#         if not company:
-#             logger.error(f"[{connection_id}] Company not found for API key: {company_api_key}")
-#             await websocket.close(code=1011)
-#             websocket_closed = True
-#             return
-            
-#         # Set company info from the database
-#         company_info = {
-#             "id": company.id,
-#             "name": company.name or "Customer Support"  # Fallback name
-#         }
-        
-#         connection_manager.client_companies[client_id] = company_info
-        
-#         # Connect client to manager
-#         await connection_manager.connect(websocket, client_id)
-#         logger.info(f"[{connection_id}] Client {client_id} connected to manager")
-#         connected = True
-        
-#         # Initialize agent resources
-#         agent_record = db.query(Agent).filter_by(id=agent_id).first()
-#         if not agent_record:
-#             logger.error(f"[{connection_id}] Agent not found with ID: {agent_id}")
-#             await websocket.close(code=1011)
-#             websocket_closed = True
-#             return
-            
-#         agent = {
-#             "id": agent_record.id,
-#             "name": agent_record.name,
-#             "type": agent_record.type,
-#             "prompt": agent_record.prompt,
-#             "confidence_threshold": agent_record.confidence_threshold
-#         }
-        
-#         # Initialize agent resources for this client
-#         success = await connection_manager.initialize_agent_resources(client_id, company_info["id"], agent)
-#         if not success:
-#             logger.error(f"[{connection_id}] Failed to initialize agent resources")
-#             await websocket.close(code=1011)
-#             websocket_closed = True
-#             return
-        
-#         # # Connect client
-#         # await connection_manager.connect(websocket, client_id)
-#         # logger.info(f"[{connection_id}] Client {client_id} connected to manager")
-#         # connected = True
-
-#         # Define transcription handler (capture app via nonlocal)
-        
-#         async def handle_transcription(session_id, transcribed_text):
-#             nonlocal is_processing, last_processed_time, app, is_system_speaking
-            
-#             # If transcribed_text is empty, it means Deepgram has detected end of speech
-#             # or has completed utterances to process
-#             if not transcribed_text.strip():
-#                 # Only process if we're not already processing and not currently speaking
-#                 if not is_processing and not is_system_speaking:
-#                     # Get all completed speech
-#                     combined_speech = await stt_service.get_completed_speech(session_id)
-                    
-#                     if combined_speech.strip():
-#                         is_processing = True
-#                         last_processed_time = time.time()
-                        
-#                         logger.info(f"[{connection_id}] Processing completed speech: '{combined_speech}'")
-                        
-#                         message_data = {
-#                             "type": "message",
-#                             "message": combined_speech,
-#                             "source": "twilio"
-#                         }
-                        
-#                         # Process the speech
-#                         asyncio.create_task(
-#                             process_message_with_retries(connection_manager, client_id, message_data, app)
-#                         )
-#                 return
-            
-#             # If we get here, we have actual transcribed text from initial processing
-#             # Update timing info
-#             last_processed_time = time.time()
-            
-#             # If system is speaking, stop it to handle barge-in
-#             if is_system_speaking:
-#                 should_stop_speaking.set()
-#                 is_system_speaking = False
-#                 logger.info(f"[{connection_id}] User barge-in detected - stopping system speech")
-        
-        
-        
-#         # Main processing loop
-#         while not websocket_closed:
-#             try:
-#                 message = await asyncio.wait_for(websocket.receive(), timeout=1.0)
-#                 message_count += 1
-#                 last_message_time = time.time()
-
-#                 if message.get('type') == 'websocket.disconnect':
-#                     logger.info(f"[{connection_id}] Received disconnect message")
-#                     websocket_closed = True
-#                     break
-
-#                 if 'bytes' in message:
-#                     audio_data = message['bytes']
-#                     audio_chunks += 1
-#                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
-                     
-#                 elif 'text' in message:
-#                     text_data = message['text']
-#                     try:
-                        
-#                         data = json.loads(text_data)
-#                         event = data.get('event')
-                        
-#                         if data['event'] == 'mark':
-#                             mark_name = data.get('mark', {}).get('name', '')
-#                             logger.info(f"[TWILIO_MARK] Received mark response: {mark_name} - Audio playback confirmed!")
-                        
-#                         # Log all incoming Twilio events
-#                         # logger.info(f"[TWILIO_DEBUG] Received Twilio event: {event}")
-                        
-#                         # Log full message for important events
-#                         if event in ['connected', 'start', 'stop', 'mark']:
-#                             logger.info(f"[TWILIO_DEBUG] Full message: {text_data}")
-                        
-#                         # Handle mark responses specially (indicates audio playback status)
-#                         if event == 'mark':
-#                             mark_name = data.get('mark', {}).get('name', '')
-#                             logger.info(f"[TWILIO_DEBUG] Received mark response: {mark_name} - Audio should be playing!")
-                            
-                            
-                        
-#                         if event == 'start':
-#                             stream_sid = data.get('streamSid')
-#                             if not stream_sid:
-#                                 logger.error("Missing streamSid in start event")
-#                                 return
-
-#                             # Ensure app.state has a stream_sids dictionary
-#                             if not hasattr(app.state, 'stream_sids'):
-#                                 app.state.stream_sids = {}
-
-#                             app.state.stream_sids[client_id] = stream_sid
-
-#                             call_sid = data.get('start', {}).get('callSid')
-#                             if call_sid:
-#                                 if not hasattr(app.state, 'client_call_mapping'):
-#                                     app.state.client_call_mapping = {}
-#                                 app.state.client_call_mapping[client_id] = call_sid
-
-#                             logger.info(f"[TWILIO_DEBUG] Stream started: streamSid={stream_sid}, callSid={call_sid}")
-
-#                             if not connected:
-#                                 await websocket.send_text(json.dumps({
-#                                     "event": "connected",
-#                                     "protocol": "websocket",
-#                                     "version": "1.0.0"
-#                                 }))
-#                                 connected = True
-
-#                             await asyncio.sleep(0.5)
-#                             if not welcome_sent:
-#                                 # Fall back to the normal method if direct welcome fails
-#                                 welcome_data = {"type": "message", "message": "__SYSTEM_WELCOME__", "source": "twilio"}
-#                                 asyncio.create_task(process_buffered_message(connection_manager, client_id, welcome_data, app))
-#                                 welcome_sent = True
-
-                        
-#                         if event == 'media':
-#                             media_data = data.get('media', {})
-#                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
-#                                 payload = media_data.get('payload')
-                                
-#                                 # Check for speech activity for barge-in detection
-#                                 try:
-#                                     audio_bytes = base64.b64decode(payload)
-#                                     non_zero = sum(1 for b in audio_bytes if b != 128)
-#                                     energy_level = (non_zero / len(audio_bytes)) * 100
-                                    
-#                                     # If energy is high enough, consider it speech
-#                                     if energy_level > min_speech_energy:
-#                                         logger.info(f"[{connection_id}] Potential user barge-in detected")
-#                                         should_stop_speaking.set()
-#                                         is_system_speaking = False
-#                                 except Exception as e:
-#                                     logger.debug(f"[{connection_id}] Error in barge-in detection: {str(e)}")
-                                
-#                                 # Process audio normally
-#                                 audio_data = await stt_service.convert_twilio_audio(payload, client_id)
-#                                 if audio_data:
-#                                     await stt_service.process_audio_chunk(client_id, audio_data, handle_transcription)
-#                                     audio_chunks += 1
-                                    
-#                         elif event == 'stop':
-#                             logger.info(f"[{connection_id}] STOP event received")
-#                             await stt_service.process_final_buffer(client_id, handle_transcription)
-#                             websocket_closed = True
-#                             break
-                        
-#                     except json.JSONDecodeError:
-#                         logger.warning(f"[{connection_id}] Non-JSON text received")
-#                 # (Heartbeat and silence checks omitted for brevity.)
-#                 if not is_processing and await stt_service.detect_silence(client_id, silence_threshold):
-#                     await handle_transcription(client_id, "")
-
-#             except asyncio.TimeoutError:
-#                 # (Heartbeat logic, if any, goes here.)
-#                 pass
-#             except Exception as e:
-#                 logger.error(f"[{connection_id}] Error processing message: {str(e)}")
-#                 websocket_closed = True
-#                 break
-
-#     except Exception as e:
-#         logger.error(f"[{connection_id}] Error in Twilio Media Stream handler: {str(e)}", exc_info=True)
-#     finally:
-#         stt_service.close_session(client_id)
-#         if client_id and connection_manager:
-#             logger.info(f"[{connection_id}] Disconnecting client {client_id}")
-#             try:
-#                 await connection_manager.cleanup_agent_resources(client_id)
-#                 connection_manager.disconnect(client_id)
-#             except Exception as e:
-#                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
-#         logger.info(f"[{connection_id}] Twilio Media Stream connection closed after {message_count} messages ({audio_chunks} audio chunks)")
-
 async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id: str, company_api_key: str, agent_id: str, db: Session):
-    """Handler for Twilio Media Streams using Deepgram for transcription."""
+    """Handler for Twilio Media Streams using Deepgram WebSocket for transcription."""
     app = websocket.app  # Get FastAPI app instance
     connection_manager = app.state.connection_manager
     client_id = peer_id
@@ -619,8 +231,8 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
     connected = False
     websocket_closed = False
     
-    # Create Deepgram speech service
-    speech_service = DeepgramSpeechService()
+    # Create Deepgram speech service using WebSocket
+    speech_service = DeepgramWebSocketService()
     
     # Track when we last heard the user speak to implement silence detection
     last_speech_time = time.time()
@@ -692,32 +304,39 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
             # Update last speech time for silence detection
             last_speech_time = time.time()
             
-            if transcribed_text and transcribed_text.strip():
-                logger.info(f"[{connection_id}] TRANSCRIBED: '{transcribed_text}'")
+            # If empty text is returned, it might indicate end of utterance
+            if not transcribed_text or not transcribed_text.strip():
+                # No need to process empty transcripts
+                return
                 
-                is_processing = True
-                
-                message_data = {
-                    "type": "message",
-                    "message": transcribed_text,
-                    "source": "twilio"
-                }
-                
-                # Process the speech
-                try:
-                    await process_buffered_message(connection_manager, client_id, message_data, app)
-                except Exception as e:
-                    logger.error(f"[{connection_id}] Error processing message: {str(e)}")
-                finally:
-                    is_processing = False
+            logger.info(f"[{connection_id}] TRANSCRIBED: '{transcribed_text}'")
+            
+            is_processing = True
+            
+            message_data = {
+                "type": "message",
+                "message": transcribed_text,
+                "source": "twilio"
+            }
+            
+            # Process the speech
+            try:
+                await process_buffered_message(connection_manager, client_id, message_data, app)
+            except Exception as e:
+                logger.error(f"[{connection_id}] Error processing message: {str(e)}")
+            finally:
+                is_processing = False
         
-        # Initialize Deepgram session
+        # Initialize Deepgram WebSocket session
+        logger.info(f"[{connection_id}] Initializing Deepgram WebSocket session")
         init_success = await speech_service.initialize_session(client_id, handle_transcription)
         if not init_success:
-            logger.error(f"[{connection_id}] Failed to initialize Deepgram session")
+            logger.error(f"[{connection_id}] Failed to initialize Deepgram WebSocket session")
             await websocket.close(code=1011)
             websocket_closed = True
             return
+        
+        logger.info(f"[{connection_id}] Deepgram WebSocket session initialized successfully")
         
         # Main processing loop
         while not websocket_closed:
@@ -731,7 +350,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                     break
 
                 if 'bytes' in message:
-                    # Raw audio data received
+                    # Raw audio data received - forward directly to WebSocket
                     audio_data = message['bytes']
                     audio_chunks += 1
                     await speech_service.process_audio_chunk(client_id, audio_data)
@@ -780,7 +399,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                                 asyncio.create_task(process_buffered_message(connection_manager, client_id, welcome_data, app))
                                 welcome_sent = True
                         
-                        if event == 'media':
+                        elif event == 'media':
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
@@ -788,14 +407,12 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                                 # Convert Twilio audio format for processing
                                 audio_data = await speech_service.convert_twilio_audio(payload, client_id)
                                 if audio_data:
-                                    # Process the audio through Deepgram
+                                    # Process the audio through Deepgram WebSocket
                                     await speech_service.process_audio_chunk(client_id, audio_data)
                                     audio_chunks += 1
                                     # Update last speech time
                                     last_speech_time = time.time()
-                                else:
-                                    logger.debug(f"[{connection_id}] Received silent audio chunk, skipping processing")
-                                    
+                                
                         elif event == 'stop':
                             logger.info(f"[{connection_id}] Call ended")
                             websocket_closed = True
@@ -835,7 +452,8 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                 logger.error(f"[{connection_id}] Error during cleanup: {str(e)}")
                 
         logger.info(f"[{connection_id}] Call ended after {message_count} messages ({audio_chunks} audio chunks)")
-
+        
+        
                           
         
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
