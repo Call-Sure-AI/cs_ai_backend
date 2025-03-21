@@ -28,7 +28,7 @@ class DeepgramSpeechService:
                            transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
         """Initialize a new speech recognition session with Deepgram"""
         try:
-            # Initialize Deepgram client with the v3 SDK
+            # Correct initialization for Deepgram SDK v3
             deepgram = Deepgram(self.deepgram_api_key)
             
             # Create transcript parts list for this session
@@ -63,6 +63,7 @@ class DeepgramSpeechService:
                             self.transcript_parts[session_id] = []
                             logger.info(f"Final transcript for {session_id}: '{full_transcript}'")
                             
+
                             if transcript_callback:
                                 await transcript_callback(session_id, full_transcript)
                     
@@ -81,7 +82,6 @@ class DeepgramSpeechService:
             self.dg_connections[session_id] = deepgramLive
             logger.info(f"Deepgram session initialized for {session_id}")
             return True
-            
         except Exception as e:
             logger.error(f"Error initializing Deepgram session for {session_id}: {str(e)}")
             return False
@@ -97,7 +97,6 @@ class DeepgramSpeechService:
             deepgramLive = self.dg_connections[session_id]
             await deepgramLive.send(audio_data)
             return True
-            
         except Exception as e:
             logger.error(f"Error processing audio chunk for {session_id}: {str(e)}")
             return False
