@@ -20,6 +20,10 @@ class DeepgramWebSocketService:
         
         if not self.deepgram_api_key:
             logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
+        else:
+            # Log first 4 characters of API key for debugging
+            masked_key = self.deepgram_api_key[:4] + "..." if len(self.deepgram_api_key) > 4 else "too_short"
+            logger.info(f"Deepgram initialized with API key starting with: {masked_key}")
         
         self.ws_base_url = "wss://api.deepgram.com/v1/listen"
         
@@ -39,7 +43,8 @@ class DeepgramWebSocketService:
                 "endpointing=true",
                 "punctuate=true",
                 "smart_format=true",
-                "filler_words=false"
+                "filler_words=false",
+                "interim_results=false"
             ]
             
             # Store session info
@@ -58,7 +63,7 @@ class DeepgramWebSocketService:
             session["task"] = asyncio.create_task(self._ws_session_handler(session_id))
             
             # Wait for connection to establish
-            for _ in range(10):
+            for _ in range(30):  # Wait up to 3 seconds
                 if session_id not in self.active_sessions:
                     return False
                     
@@ -86,42 +91,36 @@ class DeepgramWebSocketService:
             session = self.active_sessions[session_id]
             url = session["url"]
             
-            # Create authentication header
-            auth_value = f"Token {self.deepgram_api_key}"
+            # For websockets 15.0, we create extra_headers as a dict
+            extra_headers = {
+                "Authorization": f"Token {self.deepgram_api_key}"
+            }
             
-            # Create a custom connection with proper headers - older websockets version approach
-            import urllib.parse
-            headers = {"Authorization": auth_value}
+            # Log connection attempt with masked API key (first 4 chars only)
+            masked_key = self.deepgram_api_key[:4] + "..." if self.deepgram_api_key else "None"
+            logger.info(f"Connecting to Deepgram with API key starting with {masked_key}")
             
-            # Parse the URL to add headers
-            parsed = urllib.parse.urlparse(url)
-            scheme = parsed.scheme
-            host = parsed.netloc
-            path = parsed.path
-            query = parsed.query
-            
-            # Add the Authorization header to the path with custom header
-            path_with_headers = f"{path}?{query}"
-            if query:
-                path_with_headers += "&"
-            path_with_headers += f"Authorization={urllib.parse.quote_plus(auth_value)}"
-            
-            # Construct a URL with the Authorization header embedded
-            final_url = f"{scheme}://{host}{path_with_headers}"
-            
-            # Connect to the WebSocket
-            logger.info(f"Connecting to Deepgram: {host}{path}")
-            websocket = await websockets.connect(final_url)
+            # Connect with proper headers for websockets 15.0
+            try:
+                websocket = await websockets.connect(
+                    url, 
+                    extra_headers=extra_headers
+                )
             
             # Update session
             session["websocket"] = websocket
             session["connected"] = True
             
-            # Process messages
+            logger.info(f"Connected to Deepgram WebSocket for {session_id}")
+            
+            # Process messages from Deepgram
             while session_id in self.active_sessions:
                 try:
                     message = await websocket.recv()
                     await self._process_message(session_id, message)
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.warning(f"Deepgram WebSocket connection closed: {str(e)}")
+                    break
                 except Exception as e:
                     logger.error(f"Error receiving message: {str(e)}")
                     break
@@ -156,10 +155,13 @@ class DeepgramWebSocketService:
             data = json.loads(message)
             message_type = data.get("type")
             
+            logger.debug(f"Received message type: {message_type}")
+            
             # Process different types of messages
             if message_type == "Results":
                 # Get transcript from results
-                alternatives = data.get("channel", {}).get("alternatives", [])
+                channel_data = data.get("channel", {})
+                alternatives = channel_data.get("alternatives", [])
                 
                 if alternatives and len(alternatives) > 0:
                     transcript = alternatives[0].get("transcript", "").strip()
@@ -169,8 +171,16 @@ class DeepgramWebSocketService:
                         logger.info(f"Final transcript for {session_id}: '{transcript}'")
                         await callback(session_id, transcript)
             
+            elif message_type == "UtteranceEnd":
+                logger.debug(f"Utterance end detected for {session_id}")
+                await callback(session_id, "")  # Empty string signals utterance end
+                
             elif message_type == "Error":
                 logger.error(f"Deepgram error: {data}")
+                
+            # For debugging - log metadata responses
+            elif message_type == "Metadata":
+                logger.debug(f"Received Deepgram metadata")
                 
         except json.JSONDecodeError:
             logger.error(f"Failed to parse message: {message[:100]}...")
@@ -191,8 +201,12 @@ class DeepgramWebSocketService:
             
             # If connected, send directly
             if session["connected"] and websocket:
-                await websocket.send(audio_data)
-                return True
+                try:
+                    await websocket.send(audio_data)
+                    return True
+                except Exception as e:
+                    logger.error(f"Error sending audio to Deepgram: {str(e)}")
+                    return False
                 
             # Otherwise store in buffer
             session["buffer"].extend(audio_data)
