@@ -101,11 +101,10 @@ class DeepgramWebSocketService:
             logger.info(f"Connecting to Deepgram with API key starting with {masked_key}")
             
             # Connect with proper headers for websockets 15.0
-            try:
-                websocket = await websockets.connect(
-                    url, 
-                    extra_headers=extra_headers
-                )
+            websocket = await websockets.connect(
+                url, 
+                extra_headers=extra_headers
+            )
             
             # Update session
             session["websocket"] = websocket
