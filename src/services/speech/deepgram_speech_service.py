@@ -9,6 +9,7 @@ import json
 import time
 from deepgram import (
     DeepgramClient,
+    DeepgramClientOptions,
     LiveOptions,
     LiveTranscriptionEvents
 )
@@ -35,27 +36,20 @@ class DeepgramSpeechService:
                            transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
         """Initialize a new speech recognition session with Deepgram"""
         try:
-            # Initialize Deepgram client
-            dg_client = DeepgramClient(self.deepgram_api_key)
+            # Configure Deepgram client options with keepalive
+            config = DeepgramClientOptions(
+                options={"keepalive": "true"}
+            )
+            
+            # Initialize Deepgram client with the config
+            dg_client = DeepgramClient(self.deepgram_api_key, config)
             
             # Create transcript parts list for this session
             self.transcript_parts[session_id] = []
             
-            # Set up connection options
-            options = LiveOptions(
-                model="nova-3", 
-                language="en-US",
-                smart_format=True,
-                interim_results=True,
-                utterance_end_ms=500,
-                vad_events=True,
-                encoding="mulaw",
-                channels=1,
-                sample_rate=8000
-            )
-            
             # Create the live transcription connection
-            dg_connection = dg_client.listen.live.v("1")
+            # Note: Based on latest docs, use asyncwebsocket for async implementations
+            dg_connection = dg_client.listen.asyncwebsocket.v("1")
             
             # Define event handlers
             async def on_message(result, **kwargs):
@@ -84,17 +78,30 @@ class DeepgramSpeechService:
                 except Exception as e:
                     logger.error(f"Error processing Deepgram transcript: {str(e)}")
                     
-            async def on_utterance_end(**kwargs):
-                """Handle utterance end events from Deepgram"""
-                logger.debug(f"Utterance end detected for {session_id}")
-            
+            async def on_error(error, **kwargs):
+                """Handle errors from Deepgram"""
+                logger.error(f"Deepgram error for {session_id}: {error}")
+                
             # Register event handlers
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
-            dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
+            dg_connection.on(LiveTranscriptionEvents.Error, on_error)
             
-            # Start the connection - FIX: Don't use await for a synchronous method
-            # The Deepgram documentation might be misleading, but start() returns a bool, not an awaitable
-            success = dg_connection.start(options)
+            # Set up connection options
+            options = LiveOptions(
+                model="nova-3", 
+                language="en-US",
+                smart_format=True,
+                interim_results=True,
+                utterance_end_ms="500",
+                encoding="mulaw",
+                channels=1,
+                sample_rate=8000
+            )
+            
+            # Start the connection - note this returns a boolean
+            # Per docs, we don't use await here directly since this is not async in current SDK
+            success = await dg_connection.start(options)
+            
             if not success:
                 logger.error(f"Failed to connect to Deepgram for session {session_id}")
                 return False
@@ -117,13 +124,7 @@ class DeepgramSpeechService:
                 
             # Send the audio chunk to Deepgram
             dg_connection = self.dg_connections[session_id]
-            # FIX: Deepgram's send method can be async or sync depending on the version
-            # Let's handle both cases
-            try:
-                await dg_connection.send(audio_data)
-            except TypeError:
-                # If await fails, it's a sync method
-                dg_connection.send(audio_data)
+            await dg_connection.send(audio_data)
             return True
             
         except Exception as e:
@@ -176,12 +177,7 @@ class DeepgramSpeechService:
         if session_id in self.dg_connections:
             try:
                 # Finish the Deepgram connection
-                # FIX: Similar to send(), finish() might be async or sync
-                try:
-                    await self.dg_connections[session_id].finish()
-                except TypeError:
-                    # If await fails, it's a sync method
-                    self.dg_connections[session_id].finish()
+                await self.dg_connections[session_id].finish()
                 
                 # Remove the session
                 del self.dg_connections[session_id]
