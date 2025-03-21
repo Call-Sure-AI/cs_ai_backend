@@ -100,8 +100,9 @@ class DeepgramSpeechService:
                 sample_rate=8000
             )
             
-            # Start the connection - updated to handle async properly
-            connection_successful = await dg_connection.start(options)
+            # Start the connection - corrected to handle the boolean return value properly
+            # Note: start() returns a boolean directly, not a coroutine
+            connection_successful = dg_connection.start(options)
             
             if not connection_successful:
                 logger.error(f"Failed to connect to Deepgram for session {session_id}")
