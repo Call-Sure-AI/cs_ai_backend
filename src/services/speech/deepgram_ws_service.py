@@ -43,7 +43,8 @@ class DeepgramWebSocketService:
                 "punctuate=true",
                 "smart_format=true",
                 "filler_words=false",
-                "interim_results=false"
+                "interim_results=false",
+                "encoding=linear16",  # Add encoding type (e.g., 'linear16')
             ]
             
             # Store session info
@@ -193,54 +194,57 @@ class DeepgramWebSocketService:
         try:
             if session_id not in self.active_sessions:
                 return False
-                
+
             session = self.active_sessions[session_id]
             websocket = session.get("websocket")
-            
+
             # Log audio data size for debugging
             logger.info(f"Sending audio chunk of size {len(audio_data)} bytes to Deepgram")
-            
+
             # If connected, send directly
             if session["connected"] and websocket:
                 try:
-                    await websocket.send(audio_data)
+                    # Send audio data as a binary message to Deepgram
+                    await websocket.send(audio_data)  # Send raw audio data here
                     return True
                 except Exception as e:
                     logger.error(f"Error sending audio to Deepgram: {str(e)}")
                     return False
-                
+
             # Otherwise store in buffer
             session["buffer"].extend(audio_data)
             return True
-            
+
         except Exception as e:
             logger.error(f"Error processing audio chunk: {str(e)}")
             return False
 
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes for processing."""
+        """Convert Twilio's base64 audio format to raw bytes"""
         try:
-            # Decode base64 audio
+            # Decode base64 audio to raw bytes
             audio_data = base64.b64decode(base64_payload)
             
-            # Rudimentary energy detection (optional)
-            silence = 128  # μ-law silence level
-            non_silent = sum(1 for b in audio_data if abs(b - silence) > 10)
+            # Ensure that the audio is not silent
+            silence_level = 128  # Adjust threshold if needed
+            non_silent_bytes = [abs(b - silence_level) for b in audio_data]
             
-            # Check if audio has enough energy
-            if non_silent / len(audio_data) > 0.05:  # 5% non-silent threshold
-                return audio_data
-                
-            logger.warning(f"Audio is mostly silent (only {non_silent/len(audio_data):.2%} active)")
-            return None
+            # Calculate active bytes
+            threshold = 10  # Adjust to fine-tune silence detection
+            active_bytes = sum(1 for b in non_silent_bytes if b > threshold)
             
+            # If the audio is silent, skip it
+            if active_bytes == 0:
+                logger.debug(f"Silent audio detected for {session_id}, skipping")
+                return None
+            
+            return audio_data
         except Exception as e:
-            logger.error(f"Audio conversion error: {str(e)}")
+            logger.error(f"Audio conversion error for {session_id}: {str(e)}")
             return None
-
-
-       
+    
+    
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 1.5) -> bool:
         """Check if there has been silence for a specified duration."""
         if session_id not in self.active_sessions:
