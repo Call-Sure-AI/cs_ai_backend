@@ -7,8 +7,9 @@ import base64
 import os
 import json
 import time
-from deepgram import Deepgram
+import sys
 
+# Updated imports for Deepgram SDK 3.10.1
 from deepgram import (
     DeepgramClient,
     DeepgramClientOptions,
@@ -35,25 +36,22 @@ class DeepgramSpeechService:
         self.transcript_parts = {}
             
     async def initialize_session(self, session_id: str, 
-                        transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
+                           transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
         """Initialize a new speech recognition session with Deepgram"""
         try:
-            # Configure Deepgram client options with keepalive
-            config = DeepgramClientOptions(
-                options={"keepalive": "true"}
-            )
+            # Debug: Print SDK version
+            logger.info(f"Initializing Deepgram session for {session_id}")
             
-            # Initialize Deepgram client with the config
+            # Configure Deepgram client options
+            config = DeepgramClientOptions()
+            
+            # Initialize Deepgram client with API key
             dg_client = DeepgramClient(self.deepgram_api_key, config)
             
             # Create transcript parts list for this session
             self.transcript_parts[session_id] = []
             
-            # Create the live transcription connection
-            # Updated: Use live.listen for latest SDK
-            dg_connection = dg_client.listen.live.v("1")
-            
-            # Define event handlers
+            # Define event handlers for the connection
             async def on_message(result, **kwargs):
                 """Handle incoming transcripts from Deepgram"""
                 try:
@@ -69,7 +67,7 @@ class DeepgramSpeechService:
                         self.transcript_parts[session_id].append(sentence)
                         
                         # If speech_final is True, the user has finished speaking
-                        if result.speech_final:
+                        if hasattr(result, 'speech_final') and result.speech_final:
                             full_transcript = ' '.join(self.transcript_parts[session_id])
                             self.transcript_parts[session_id] = []
                             logger.info(f"Final transcript for {session_id}: '{full_transcript}'")
@@ -84,9 +82,23 @@ class DeepgramSpeechService:
                 """Handle errors from Deepgram"""
                 logger.error(f"Deepgram error for {session_id}: {error}")
                 
-            # Register event handlers
+            async def on_open(open_data, **kwargs):
+                """Handle connection open event"""
+                logger.info(f"Deepgram connection opened for {session_id}: {open_data}")
+                
+            async def on_close(close_data, **kwargs):
+                """Handle connection close event"""
+                logger.info(f"Deepgram connection closed for {session_id}: {close_data}")
+            
+            # Create the connection using the modified approach for SDK 3.10.1
+            # Try the new websocket style (non-async version)
+            dg_connection = dg_client.listen.websocket.v("1")
+            
+            # Register all event handlers
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
             dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+            dg_connection.on(LiveTranscriptionEvents.Open, on_open)
+            dg_connection.on(LiveTranscriptionEvents.Close, on_close)
             
             # Set up connection options
             options = LiveOptions(
@@ -100,8 +112,7 @@ class DeepgramSpeechService:
                 sample_rate=8000
             )
             
-            # Start the connection - corrected to handle the boolean return value properly
-            # Note: start() returns a boolean directly, not a coroutine
+            # Start the connection without awaiting (it returns a boolean directly)
             connection_successful = dg_connection.start(options)
             
             if not connection_successful:
@@ -115,9 +126,11 @@ class DeepgramSpeechService:
             
         except Exception as e:
             logger.error(f"Error initializing Deepgram session for {session_id}: {str(e)}")
+            # Print more detailed traceback
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
-    
-      
+        
     async def process_audio_chunk(self, session_id: str, audio_data: bytes):
         """Process an audio chunk using Deepgram's live streaming API"""
         try:
@@ -127,7 +140,7 @@ class DeepgramSpeechService:
                 
             # Send the audio chunk to Deepgram
             dg_connection = self.dg_connections[session_id]
-            await dg_connection.send(audio_data)
+            dg_connection.send(audio_data)
             return True
             
         except Exception as e:
@@ -180,7 +193,7 @@ class DeepgramSpeechService:
         if session_id in self.dg_connections:
             try:
                 # Finish the Deepgram connection
-                await self.dg_connections[session_id].finish()
+                self.dg_connections[session_id].finish()
                 
                 # Remove the session
                 del self.dg_connections[session_id]
