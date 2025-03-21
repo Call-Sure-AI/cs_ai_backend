@@ -92,7 +92,7 @@ class DeepgramWebSocketService:
             url = session["url"]
             
             # For websockets 15.0, we create extra_headers as a dict
-            extra_headers = {
+            headers = {
                 "Authorization": f"Token {self.deepgram_api_key}"
             }
             
@@ -100,10 +100,10 @@ class DeepgramWebSocketService:
             masked_key = self.deepgram_api_key[:4] + "..." if self.deepgram_api_key else "None"
             logger.info(f"Connecting to Deepgram with API key starting with {masked_key}")
             
-            # Connect with proper headers for websockets 15.0
+            # Connect with proper headers for websockets 10.0 or below
             websocket = await websockets.connect(
                 url, 
-                extra_headers=extra_headers
+                extra_headers=headers  # Use headers if websockets < 10.0
             )
             
             # Update session
@@ -123,7 +123,6 @@ class DeepgramWebSocketService:
                 except Exception as e:
                     logger.error(f"Error receiving message: {str(e)}")
                     break
-                    
         except Exception as e:
             logger.error(f"WebSocket session error: {str(e)}")
         finally:
@@ -137,7 +136,9 @@ class DeepgramWebSocketService:
             if session_id in self.active_sessions:
                 self.active_sessions[session_id]["connected"] = False
                 self.active_sessions[session_id]["websocket"] = None
-                
+
+
+            
     async def _process_message(self, session_id: str, message: str):
         """Process messages from Deepgram."""
         try:
