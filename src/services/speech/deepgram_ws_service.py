@@ -27,8 +27,7 @@ class DeepgramWebSocketService:
         
         self.ws_base_url = "wss://api.deepgram.com/v1/listen"
         
-    async def initialize_session(self, session_id: str, 
-                              callback: Optional[Callable[[str, str], Awaitable[Any]]] = None) -> bool:
+    async def initialize_session(self, session_id: str, callback: Optional[Callable[[str, str], Awaitable[Any]]] = None) -> bool:
         """Initialize a new Deepgram WebSocket session."""
         try:
             if session_id in self.active_sessions:
@@ -63,7 +62,7 @@ class DeepgramWebSocketService:
             session["task"] = asyncio.create_task(self._ws_session_handler(session_id))
             
             # Wait for connection to establish
-            for _ in range(30):  # Wait up to 3 seconds
+            for _ in range(60):  # Wait up to 6 seconds to establish the connection
                 if session_id not in self.active_sessions:
                     return False
                     
@@ -79,7 +78,8 @@ class DeepgramWebSocketService:
         except Exception as e:
             logger.error(f"Error initializing Deepgram session: {str(e)}")
             return False
-            
+
+        
     async def _ws_session_handler(self, session_id: str):
         """Handle the WebSocket session to Deepgram."""
         websocket = None
@@ -91,31 +91,32 @@ class DeepgramWebSocketService:
             session = self.active_sessions[session_id]
             url = session["url"]
             
-            # For websockets 15.0, we create extra_headers as a dict
+            # Set up the headers
             headers = {
                 "Authorization": f"Token {self.deepgram_api_key}"
             }
             
-            # Log connection attempt with masked API key (first 4 chars only)
+            # Log the connection attempt
             masked_key = self.deepgram_api_key[:4] + "..." if self.deepgram_api_key else "None"
             logger.info(f"Connecting to Deepgram with API key starting with {masked_key}")
             
-            # Connect with proper headers for websockets 10.0 or below
+            # Establish the WebSocket connection
             websocket = await websockets.connect(
-                url, 
-                extra_headers=headers  # Use headers if websockets < 10.0
+                url,
+                extra_headers=headers  # For websockets < 10.0
             )
             
-            # Update session
+            # Update session state
             session["websocket"] = websocket
             session["connected"] = True
             
             logger.info(f"Connected to Deepgram WebSocket for {session_id}")
             
-            # Process messages from Deepgram
+            # Process incoming messages from Deepgram
             while session_id in self.active_sessions:
                 try:
                     message = await websocket.recv()
+                    logger.debug(f"Received message: {message}")
                     await self._process_message(session_id, message)
                 except websockets.exceptions.ConnectionClosed as e:
                     logger.warning(f"Deepgram WebSocket connection closed: {str(e)}")
@@ -130,9 +131,9 @@ class DeepgramWebSocketService:
             if websocket:
                 try:
                     await websocket.close()
-                except Exception:
-                    pass
-                    
+                except Exception as e:
+                    logger.error(f"Error closing WebSocket: {str(e)}")
+                
             if session_id in self.active_sessions:
                 self.active_sessions[session_id]["connected"] = False
                 self.active_sessions[session_id]["websocket"] = None
@@ -196,8 +197,8 @@ class DeepgramWebSocketService:
             session = self.active_sessions[session_id]
             websocket = session.get("websocket")
             
-            # Update last activity time
-            session["last_activity"] = time.time()
+            # Log audio data size for debugging
+            logger.info(f"Sending audio chunk of size {len(audio_data)} bytes to Deepgram")
             
             # If connected, send directly
             if session["connected"] and websocket:
@@ -215,6 +216,7 @@ class DeepgramWebSocketService:
         except Exception as e:
             logger.error(f"Error processing audio chunk: {str(e)}")
             return False
+
             
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
         """Convert Twilio's base64 audio format to raw bytes for processing."""
@@ -222,7 +224,7 @@ class DeepgramWebSocketService:
             # Decode base64 audio
             audio_data = base64.b64decode(base64_payload)
             
-            # Rudimentary energy detection
+            # Rudimentary energy detection (optional)
             silence = 128  # μ-law silence level
             non_silent = sum(1 for b in audio_data if abs(b - silence) > 10)
             
@@ -230,12 +232,15 @@ class DeepgramWebSocketService:
             if non_silent / len(audio_data) > 0.05:  # 5% non-silent threshold
                 return audio_data
                 
+            logger.warning(f"Audio is mostly silent (only {non_silent/len(audio_data):.2%} active)")
             return None
             
         except Exception as e:
             logger.error(f"Audio conversion error: {str(e)}")
             return None
-            
+
+
+       
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 1.5) -> bool:
         """Check if there has been silence for a specified duration."""
         if session_id not in self.active_sessions:
