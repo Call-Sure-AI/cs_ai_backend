@@ -29,18 +29,16 @@ class DeepgramSpeechService:
             
         # Store connection objects for each session
         self.dg_connections = {}
-        self.transcript_queues = {}
         self.transcript_parts = {}
             
     async def initialize_session(self, session_id: str, 
-                           transcript_callback: Optional[Callable[[str, Dict], Awaitable[Any]]] = None):
+                           transcript_callback: Optional[Callable[[str, str], Awaitable[Any]]] = None):
         """Initialize a new speech recognition session with Deepgram"""
         try:
             # Initialize Deepgram client
             dg_client = DeepgramClient(self.deepgram_api_key)
             
-            # Create a transcript queue for this session
-            self.transcript_queues[session_id] = asyncio.Queue()
+            # Create transcript parts list for this session
             self.transcript_parts[session_id] = []
             
             # Set up connection options
@@ -73,12 +71,7 @@ class DeepgramSpeechService:
                     if result.is_final:
                         # This is a final transcript segment
                         self.transcript_parts[session_id].append(sentence)
-                        if transcript_callback:
-                            await transcript_callback(session_id, {
-                                "type": "transcript_final", 
-                                "content": sentence
-                            })
-                            
+                        
                         # If speech_final is True, the user has finished speaking
                         if result.speech_final:
                             full_transcript = ' '.join(self.transcript_parts[session_id])
@@ -86,17 +79,8 @@ class DeepgramSpeechService:
                             logger.info(f"Final transcript for {session_id}: '{full_transcript}'")
                             
                             if transcript_callback:
-                                await transcript_callback(session_id, {
-                                    "type": "speech_final", 
-                                    "content": full_transcript
-                                })
-                    else:
-                        # This is an interim/preliminary transcript
-                        if transcript_callback:
-                            await transcript_callback(session_id, {
-                                "type": "transcript_interim", 
-                                "content": sentence
-                            })
+                                await transcript_callback(session_id, full_transcript)
+                    
                 except Exception as e:
                     logger.error(f"Error processing Deepgram transcript: {str(e)}")
                     
@@ -108,8 +92,10 @@ class DeepgramSpeechService:
             dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
             dg_connection.on(LiveTranscriptionEvents.UtteranceEnd, on_utterance_end)
             
-            # Start the connection
-            if await dg_connection.start(options) is False:
+            # Start the connection - FIX: Don't use await for a synchronous method
+            # The Deepgram documentation might be misleading, but start() returns a bool, not an awaitable
+            success = dg_connection.start(options)
+            if not success:
                 logger.error(f"Failed to connect to Deepgram for session {session_id}")
                 return False
                 
@@ -131,7 +117,13 @@ class DeepgramSpeechService:
                 
             # Send the audio chunk to Deepgram
             dg_connection = self.dg_connections[session_id]
-            await dg_connection.send(audio_data)
+            # FIX: Deepgram's send method can be async or sync depending on the version
+            # Let's handle both cases
+            try:
+                await dg_connection.send(audio_data)
+            except TypeError:
+                # If await fails, it's a sync method
+                dg_connection.send(audio_data)
             return True
             
         except Exception as e:
@@ -184,13 +176,17 @@ class DeepgramSpeechService:
         if session_id in self.dg_connections:
             try:
                 # Finish the Deepgram connection
-                await self.dg_connections[session_id].finish()
+                # FIX: Similar to send(), finish() might be async or sync
+                try:
+                    await self.dg_connections[session_id].finish()
+                except TypeError:
+                    # If await fails, it's a sync method
+                    self.dg_connections[session_id].finish()
+                
                 # Remove the session
                 del self.dg_connections[session_id]
                 
-                # Clean up queues and transcript parts
-                if session_id in self.transcript_queues:
-                    del self.transcript_queues[session_id]
+                # Clean up transcript parts
                 if session_id in self.transcript_parts:
                     del self.transcript_parts[session_id]
                     
