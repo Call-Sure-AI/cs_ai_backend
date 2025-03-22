@@ -67,22 +67,24 @@ def is_image_file(content_type: str) -> bool:
     """Check if the file is an image based on content type"""
     return content_type.startswith('image/')
 
+
+
 # @router.post("/agents")
 # async def create_agent_with_documents(
 #     name: str = Form(...),
 #     type: str = Form(...),
 #     company_id: str = Form(...),
 #     prompt: str = Form(...),
-#     files: List[UploadFile] = File(None),
+#     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
 #     descriptions: Optional[str] = Form(None),
+#     user_id: str = Form(...), # User ID for the agent
 #     db: Session = Depends(get_db)
 # ):
 #     """
-#     Create a new agent with support for multiple file uploads (documents and images)
+#     Create a new agent with support for multiple file URLs (documents and images)
 #     """
 #     try:
 #         logger.info(f"Creating agent with name: {name}, type: {type}, company_id: {company_id}")
-#         logger.info(f"Files received: {[f.filename for f in files] if files else None}")
         
 #         # Create agent
 #         agent = Agent(
@@ -90,6 +92,7 @@ def is_image_file(content_type: str) -> bool:
 #             name=name,
 #             type=type.lower(),
 #             company_id=company_id,
+#             user_id=user_id,
 #             prompt=prompt,
 #             active=True
 #         )
@@ -101,7 +104,15 @@ def is_image_file(content_type: str) -> bool:
 #         document_ids = []
 #         image_ids = []
 
-#         if files:
+#         if file_urls:
+#             # Parse file URLs
+#             try:
+#                 urls_list = json.loads(file_urls)
+#                 logger.info(f"File URLs received: {urls_list}")
+#             except json.JSONDecodeError:
+#                 logger.error("Invalid file URLs JSON provided")
+#                 raise HTTPException(status_code=400, detail="Invalid file URLs format")
+
 #             # Parse descriptions if provided
 #             descriptions_dict = {}
 #             if descriptions:
@@ -118,28 +129,40 @@ def is_image_file(content_type: str) -> bool:
 #             # Ensure collection exists
 #             await qdrant_service.setup_collection(company_id)
             
-#             # Separate files into images and documents
+#             # Process each file URL
 #             image_files = []
 #             document_files = []
             
-#             for file in files:
+#             for url in urls_list:
 #                 try:
-#                     content = await file.read()
+#                     # List objects in bucket to verify exact key
+#                     filename = url.split('/')[-1]
+#                     logger.info(f"Original filename from URL: {filename}")
+                    
+#                     # Try downloading directly using boto3
+#                     content, content_type = download_from_s3_direct(url)
+                    
+#                     if not content:
+#                         logger.warning(f"Failed to download content for URL: {url}")
+#                         continue
+                    
+#                     logger.info(f"Downloaded file: {filename}, size: {len(content)} bytes, content type: {content_type}")
                     
 #                     # Determine if file is an image
-#                     is_image = is_image_file(file.content_type)
+#                     is_image = is_image_file(content_type)
                     
 #                     # Create document record
 #                     document = Document(
 #                         company_id=company_id,
 #                         agent_id=agent.id,
-#                         name=file.filename,
+#                         name=filename,
 #                         content=content,
-#                         file_type=file.content_type,
+#                         file_type=content_type,
 #                         type=DocumentType.image if is_image else DocumentType.custom,
 #                         metadata={
-#                             "description": descriptions_dict.get(file.filename) if is_image else None,
-#                             "original_filename": file.filename,
+#                             "description": descriptions_dict.get(filename) if is_image else None,
+#                             "original_filename": filename,
+#                             "file_url": url,
 #                             "uploaded_at": datetime.now().isoformat()
 #                         }
 #                     )
@@ -153,12 +176,13 @@ def is_image_file(content_type: str) -> bool:
 #                         image_files.append({
 #                             'id': document.id,
 #                             'content': content,
-#                             'description': descriptions_dict.get(file.filename),
-#                             'filename': file.filename,
-#                             'content_type': file.content_type,
+#                             'description': descriptions_dict.get(filename),
+#                             'filename': filename,
+#                             'content_type': content_type,
 #                             'metadata': {
 #                                 'agent_id': agent.id,
-#                                 'original_filename': file.filename
+#                                 'original_filename': filename,
+#                                 'file_url': url
 #                             }
 #                         })
 #                         image_ids.append(document.id)
@@ -168,14 +192,15 @@ def is_image_file(content_type: str) -> bool:
 #                             'content': content,
 #                             'metadata': {
 #                                 'agent_id': agent.id,
-#                                 'filename': file.filename,
-#                                 'file_type': file.content_type
+#                                 'filename': filename,
+#                                 'file_type': content_type,
+#                                 'file_url': url
 #                             }
 #                         })
 #                         document_ids.append(document.id)
                             
 #                 except Exception as e:
-#                     logger.error(f"Error processing file {file.filename}: {str(e)}")
+#                     logger.error(f"Error processing URL {url}: {str(e)}")
 #                     continue
             
 #             # Process documents and images in parallel if possible
@@ -222,7 +247,6 @@ def is_image_file(content_type: str) -> bool:
 #         db.rollback()
 #         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/agents")
 async def create_agent_with_documents(
     name: str = Form(...),
@@ -239,6 +263,15 @@ async def create_agent_with_documents(
     """
     try:
         logger.info(f"Creating agent with name: {name}, type: {type}, company_id: {company_id}")
+        
+        # Check if company_id is "undefined" or not a valid UUID
+        if company_id == "undefined" or not is_valid_uuid(company_id):
+            raise HTTPException(status_code=400, detail="Invalid company_id. A valid company ID is required.")
+        
+        # Verify company exists in the database
+        company = db.query(Company).filter_by(id=company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail=f"Company with ID {company_id} not found")
         
         # Create agent
         agent = Agent(
@@ -400,6 +433,16 @@ async def create_agent_with_documents(
         logger.error(f"Error creating agent: {str(e)}", exc_info=True)
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+# Helper function to validate UUID
+def is_valid_uuid(val):
+    """Check if string is a valid UUID"""
+    try:
+        uuid_obj = uuid.UUID(str(val))
+        return str(uuid_obj) == val
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 
 def list_s3_bucket_objects(bucket_name, prefix=''):
     """
