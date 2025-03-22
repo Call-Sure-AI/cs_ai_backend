@@ -190,13 +190,13 @@ class WebRTCManager:
                 
             # Map peer to client ID if it's not already a client ID
             client_id = peer_id
-            if not client_id.startswith('client_'):
-                # Generate a temporary client ID if we got a message from a non-client peer
-                client_id = f"client_{int(time.time() * 1000)}"
-                # Register the websocket with connection manager
-                await self.connection_manager.connect(peer.websocket, client_id)
-                self.connection_manager.client_companies[client_id] = peer.company_info
-                logger.info(f"Created temporary client ID {client_id} for peer {peer_id}")
+            # if not client_id.startswith('client_'):
+            #     # Generate a temporary client ID if we got a message from a non-client peer
+            #     client_id = f"client_{int(time.time() * 1000)}"
+            #     # Register the websocket with connection manager
+            #     await self.connection_manager.connect(peer.websocket, client_id)
+            #     self.connection_manager.client_companies[client_id] = peer.company_info
+            #     logger.info(f"Created temporary client ID {client_id} for peer {peer_id}")
                 
             # Initialize agent resources if needed
             company_id = peer.company_id
@@ -221,10 +221,14 @@ class WebRTCManager:
                         base_agent
                     )
                 else:  
+                    logger.info(f"Agent ID: {agent_id}, type: {type(agent_id)}")
+                    agent = {
+                        'id': agent_id
+                    }
                     success = await self.connection_manager.initialize_agent_resources(
                         client_id,
                         company_id,
-                        agent_id
+                        agent
                     )
                 
                 if not success:
