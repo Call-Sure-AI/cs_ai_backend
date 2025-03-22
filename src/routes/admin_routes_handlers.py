@@ -258,6 +258,7 @@ async def create_agent_with_documents(
     advanced_settings: Optional[str] = Form(None),  # JSON string
     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
     user_id: str = Form(...),  # User ID for the agent
+    id: Optional[str] = Form(None),  # Accept existing ID to prevent duplication
     db: Session = Depends(get_db)
 ):
     """
@@ -291,9 +292,13 @@ async def create_agent_with_documents(
             except json.JSONDecodeError:
                 logger.warning("Invalid advanced_settings JSON provided")
         
+        # Use provided ID or generate a new one
+        agent_id = id if id else str(uuid.uuid4())
+        logger.info(f"Using agent ID: {agent_id} ({'provided' if id else 'generated'})")
+        
         # Create agent with fields that match the Prisma schema
         agent = Agent(
-            id=str(uuid.uuid4()),
+            id=agent_id,  # Use the provided ID or a new one
             user_id=user_id,
             name=name,
             type=type.lower(),
