@@ -305,37 +305,37 @@ class ImageProcessingJob(Base):
     agent = relationship("Agent")
 
 
-class AgentInteraction(Base):
-    __tablename__ = 'AgentInteraction'
+class Conversation(Base):
+    __tablename__ = 'Conversation'
     
     # Primary fields
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    agent_id = Column(String, ForeignKey('Agent.id'))
-    conversation_id = Column(String, ForeignKey('Conversation.id'))
+    customer_id = Column(String(255), nullable=False)
+    company_id = Column(String, ForeignKey('Company.id'))
+    current_agent_id = Column(String, ForeignKey('Agent.id'))
     
-    # Interaction Details
-    query = Column(Text, nullable=False)
-    response = Column(Text, nullable=False)
-    confidence_score = Column(Float, nullable=False)
+    # Conversation Data
+    history = Column(JSONB, default=list, nullable=False)
+    meta_data = Column(JSONB, nullable=True)
     
-    # Performance Metrics
-    response_time = Column(Float, nullable=False)  # in seconds
-    tokens_used = Column(Integer, nullable=True)
-    was_successful = Column(Boolean, nullable=True)
+    # Analytics
+    duration = Column(Float, default=0.0)  # in seconds
+    messages_count = Column(Integer, default=0)
+    sentiment_score = Column(Float, nullable=True)
     
-    # Context
-    previous_agent_id = Column(String, ForeignKey('Agent.id'), nullable=True)
-    context_window = Column(JSONB, nullable=True)
+    # Status
+    status = Column(String(50), default="active")
+    ended_by = Column(String(50), nullable=True)  # user/system/timeout
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    ended_at = Column(DateTime, nullable=True)
     
-    # Relationships - simplified to avoid circular references
-    conversation = relationship("Conversation", back_populates="interactions")
-    
-    # Using foreign_keys to disambiguate the relationships
-    agent = relationship("Agent", foreign_keys=[agent_id])
-    previous_agent = relationship("Agent", foreign_keys=[previous_agent_id])
+    # Relationships
+    company = relationship("Company", back_populates="conversations")
+    current_agent = relationship("Agent", back_populates="conversations")
+    interactions = relationship("AgentInteraction", back_populates="conversation", cascade="all, delete-orphan")
 
 # class Conversation(Base):
 #     __tablename__ = 'Conversation'
