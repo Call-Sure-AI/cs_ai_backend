@@ -160,6 +160,67 @@ class Document(Base):
     company = relationship("Company", back_populates="documents")
     agent = relationship("Agent", back_populates="documents")
 
+# class Agent(Base):
+#     __tablename__ = 'Agent'
+    
+#     # Primary fields
+#     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+#     user_id = Column(String, nullable=False)
+#     name = Column(String(255), nullable=False)
+#     type = Column(Enum(AgentType), nullable=False)
+#     company_id = Column(String, ForeignKey('Company.id'))
+    
+#     # Core Configuration
+#     prompt = Column(Text, nullable=False)
+#     template_id = Column(String(255), nullable=True)
+#     additional_context = Column(JSONB, nullable=True)
+    
+#     # Vector Store Configuration
+#     knowledge_base_ids = Column(ARRAY(String), default=[])  # Document IDs for knowledge base
+#     database_integration_ids = Column(ARRAY(String), default=[])  # Database integration IDs
+    
+#     # Query Configuration
+#     search_config = Column(JSONB, default={
+#         'score_threshold': 0.7,
+#         'limit': 5,
+#         'include_metadata': True
+#     })
+    
+#     # Agent Settings
+#     confidence_threshold = Column(Float, default=0.7)
+#     max_response_tokens = Column(Integer, default=200)
+#     temperature = Column(Float, default=0.7)
+#     active = Column(Boolean, default=True)
+    
+#     # Analytics & Performance
+#     total_interactions = Column(Integer, default=0)
+#     average_confidence = Column(Float, default=0.0)
+#     success_rate = Column(Float, default=0.0)
+#     average_response_time = Column(Float, default=0.0)
+    
+#     # Timestamps
+#     created_at = Column(DateTime, default=datetime.now)
+#     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+#     # Relationships
+#     company = relationship("Company", back_populates="agents")
+#     documents = relationship("Document", back_populates="agent")
+#     conversations = relationship("Conversation", back_populates="current_agent")
+#     interactions = relationship(
+#         "AgentInteraction",
+#         back_populates="agent",
+#         foreign_keys="[AgentInteraction.agent_id]",
+#         cascade="all, delete-orphan"
+#     )
+
+#     # Add new fields for image handling
+#     image_processing_enabled = Column(Boolean, default=False)
+#     image_processing_config = Column(JSONB, default={
+#         'max_images': 1000,
+#         'confidence_threshold': 0.7,
+#         'enable_auto_description': True
+#     })
+
 class Agent(Base):
     __tablename__ = 'Agent'
     
@@ -167,17 +228,23 @@ class Agent(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=False)
     name = Column(String(255), nullable=False)
-    type = Column(Enum(AgentType), nullable=False)
+    type = Column(String(255), nullable=False)
+    is_active = Column(Boolean, default=True)
     company_id = Column(String, ForeignKey('Company.id'))
     
     # Core Configuration
     prompt = Column(Text, nullable=False)
-    template_id = Column(String(255), nullable=True)
     additional_context = Column(JSONB, nullable=True)
+    advanced_settings = Column(JSONB, nullable=True)
+    confidence_threshold = Column(Float, default=0.7)
+    files = Column(ARRAY(String), default=[])
+    
+    # Template reference
+    template_id = Column(String(255), nullable=True)
     
     # Vector Store Configuration
-    knowledge_base_ids = Column(ARRAY(String), default=[])  # Document IDs for knowledge base
-    database_integration_ids = Column(ARRAY(String), default=[])  # Database integration IDs
+    knowledge_base_ids = Column(ARRAY(String), default=[])
+    database_integration_ids = Column(ARRAY(String), default=[])
     
     # Query Configuration
     search_config = Column(JSONB, default={
@@ -187,10 +254,8 @@ class Agent(Base):
     })
     
     # Agent Settings
-    confidence_threshold = Column(Float, default=0.7)
     max_response_tokens = Column(Integer, default=200)
     temperature = Column(Float, default=0.7)
-    is_active = Column(Boolean, default=True)
     
     # Analytics & Performance
     total_interactions = Column(Integer, default=0)
@@ -202,24 +267,18 @@ class Agent(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
-    # Relationships
-    company = relationship("Company", back_populates="agents")
-    documents = relationship("Document", back_populates="agent")
-    conversations = relationship("Conversation", back_populates="current_agent")
-    interactions = relationship(
-        "AgentInteraction",
-        back_populates="agent",
-        foreign_keys="[AgentInteraction.agent_id]",
-        cascade="all, delete-orphan"
-    )
-
-    # Add new fields for image handling
+    # Image handling
     image_processing_enabled = Column(Boolean, default=False)
     image_processing_config = Column(JSONB, default={
         'max_images': 1000,
         'confidence_threshold': 0.7,
         'enable_auto_description': True
     })
+    
+    # Relationships
+    company = relationship("Company", back_populates="agents")
+    documents = relationship("Document", back_populates="agent")
+    conversations = relationship("Conversation", back_populates="current_agent")
 
 # Add new ImageProcessingJob model for background processing
 class ImageProcessingJob(Base):

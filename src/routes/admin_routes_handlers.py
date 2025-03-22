@@ -253,9 +253,11 @@ async def create_agent_with_documents(
     type: str = Form(...),
     company_id: str = Form(...),
     prompt: str = Form(...),
+    is_active: bool = Form(True),
+    additional_context: Optional[str] = Form(None),  # JSON string
+    advanced_settings: Optional[str] = Form(None),  # JSON string
     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
-    descriptions: Optional[str] = Form(None),
-    user_id: str = Form(...), # User ID for the agent
+    user_id: str = Form(...),  # User ID for the agent
     db: Session = Depends(get_db)
 ):
     """
@@ -273,15 +275,56 @@ async def create_agent_with_documents(
         if not company:
             raise HTTPException(status_code=404, detail=f"Company with ID {company_id} not found")
         
-        # Create agent
+        # Parse additional_context if provided
+        additional_context_dict = {}
+        if additional_context:
+            try:
+                additional_context_dict = json.loads(additional_context)
+            except json.JSONDecodeError:
+                logger.warning("Invalid additional_context JSON provided")
+        
+        # Parse advanced_settings if provided
+        advanced_settings_dict = {}
+        if advanced_settings:
+            try:
+                advanced_settings_dict = json.loads(advanced_settings)
+            except json.JSONDecodeError:
+                logger.warning("Invalid advanced_settings JSON provided")
+        
+        # Create agent with fields that match the Prisma schema
         agent = Agent(
             id=str(uuid.uuid4()),
+            user_id=user_id,
             name=name,
             type=type.lower(),
             company_id=company_id,
-            user_id=user_id,
             prompt=prompt,
-            active=True
+            additional_context=additional_context_dict,
+            advanced_settings=advanced_settings_dict,
+            is_active=is_active,
+            # Fields with default values
+            knowledge_base_ids=[],
+            database_integration_ids=[],
+            search_config={
+                'score_threshold': 0.7,
+                'limit': 5,
+                'include_metadata': True
+            },
+            confidence_threshold=0.7,
+            max_response_tokens=200,
+            temperature=0.7,
+            total_interactions=0,
+            average_confidence=0.0,
+            success_rate=0.0,
+            average_response_time=0.0,
+            image_processing_enabled=False,
+            image_processing_config={
+                'max_images': 1000,
+                'confidence_threshold': 0.7,
+                'enable_auto_description': True
+            },
+            created_at=datetime.now(),
+            updated_at=datetime.now()
         )
         
         db.add(agent)
@@ -290,23 +333,18 @@ async def create_agent_with_documents(
 
         document_ids = []
         image_ids = []
+        files = []  # List to store file URLs for agent.files field
 
         if file_urls:
             # Parse file URLs
             try:
                 urls_list = json.loads(file_urls)
                 logger.info(f"File URLs received: {urls_list}")
+                # Store file URLs in files field
+                files = urls_list
             except json.JSONDecodeError:
                 logger.error("Invalid file URLs JSON provided")
                 raise HTTPException(status_code=400, detail="Invalid file URLs format")
-
-            # Parse descriptions if provided
-            descriptions_dict = {}
-            if descriptions:
-                try:
-                    descriptions_dict = json.loads(descriptions)
-                except json.JSONDecodeError:
-                    logger.warning("Invalid descriptions JSON provided")
 
             # Initialize services
             qdrant_service = QdrantService()
@@ -347,7 +385,6 @@ async def create_agent_with_documents(
                         file_type=content_type,
                         type=DocumentType.image if is_image else DocumentType.custom,
                         metadata={
-                            "description": descriptions_dict.get(filename) if is_image else None,
                             "original_filename": filename,
                             "file_url": url,
                             "uploaded_at": datetime.now().isoformat()
@@ -363,7 +400,6 @@ async def create_agent_with_documents(
                         image_files.append({
                             'id': document.id,
                             'content': content,
-                            'description': descriptions_dict.get(filename),
                             'filename': filename,
                             'content_type': content_type,
                             'metadata': {
@@ -390,8 +426,9 @@ async def create_agent_with_documents(
                     logger.error(f"Error processing URL {url}: {str(e)}")
                     continue
             
-            # Process documents and images in parallel if possible
-            embed_tasks = []
+            # Update agent with files field
+            agent.files = files
+            db.commit()
             
             # Embed documents if any
             if document_files:
@@ -420,7 +457,11 @@ async def create_agent_with_documents(
                 "name": agent.name,
                 "type": agent.type,
                 "company_id": agent.company_id,
-                "prompt": agent.prompt
+                "prompt": agent.prompt,
+                "is_active": agent.is_active,
+                "additional_context": agent.additional_context,
+                "advanced_settings": agent.advanced_settings,
+                "files": agent.files
             },
             "documents": {
                 "total": len(document_ids) + len(image_ids),
