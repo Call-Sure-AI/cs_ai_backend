@@ -190,7 +190,7 @@ class Agent(Base):
     confidence_threshold = Column(Float, default=0.7)
     max_response_tokens = Column(Integer, default=200)
     temperature = Column(Float, default=0.7)
-    active = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)
     
     # Analytics & Performance
     total_interactions = Column(Integer, default=0)

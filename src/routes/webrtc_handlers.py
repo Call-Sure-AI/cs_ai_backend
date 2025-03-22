@@ -581,7 +581,7 @@ async def signaling_endpoint(
                     })
                 elif message_type == 'message':
                     # Handle streaming messages directly using webrtc_manager
-                    await webrtc_manager.process_streaming_message(peer_id, data)
+                    await webrtc_manager.process_streaming_message(peer_id, data, agent_id)
                 elif message_type == 'ping':
                     await peer.send_message({'type': 'pong'})
                     
