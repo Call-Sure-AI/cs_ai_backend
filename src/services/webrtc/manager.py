@@ -204,6 +204,7 @@ class WebRTCManager:
             # Check if the client already has agent resources
             if client_id not in self.connection_manager.agent_resources:
                 # Get base agent
+                base_agent ={}
                 if not agent_id:
                     base_agent = await self.agent_manager.get_base_agent(company_id)
                     if not base_agent:
@@ -215,20 +216,17 @@ class WebRTCManager:
                         return
                         
                     # Initialize agent resources
-                    success = await self.connection_manager.initialize_agent_resources(
+                    
+                else:  
+                    logger.info(f"Agent ID: {agent_id}, type: {type(agent_id)}")
+                    base_agent = {
+                        'id': agent_id
+                    }
+                    
+                success = await self.connection_manager.initialize_agent_resources(
                         client_id,
                         company_id,
                         base_agent
-                    )
-                else:  
-                    logger.info(f"Agent ID: {agent_id}, type: {type(agent_id)}")
-                    agent = {
-                        'id': agent_id
-                    }
-                    success = await self.connection_manager.initialize_agent_resources(
-                        client_id,
-                        company_id,
-                        agent
                     )
                 
                 if not success:
