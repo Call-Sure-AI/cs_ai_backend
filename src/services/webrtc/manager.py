@@ -169,7 +169,7 @@ class WebRTCManager:
                 # Handle streaming text messages through connection manager
                 await self.process_streaming_message(peer_id, message_data)
                 
-    async def process_streaming_message(self, peer_id: str, message_data: dict):
+    async def process_streaming_message(self, peer_id: str, message_data: dict, agent_id: Optional[str] = None):
         """Process streaming message using ConnectionManager"""
         try:
             if peer_id not in self.peers:
@@ -203,21 +203,28 @@ class WebRTCManager:
             # Check if the client already has agent resources
             if client_id not in self.connection_manager.agent_resources:
                 # Get base agent
-                base_agent = await self.agent_manager.get_base_agent(company_id)
-                if not base_agent:
-                    logger.error(f"No base agent found for company {company_id}")
-                    await peer.send_message({
-                        "type": "error",
-                        "message": "No agent available"
-                    })
-                    return
-                    
-                # Initialize agent resources
-                success = await self.connection_manager.initialize_agent_resources(
-                    client_id,
-                    company_id,
-                    base_agent
-                )
+                if not agent_id:
+                    base_agent = await self.agent_manager.get_base_agent(company_id)
+                    if not base_agent:
+                        logger.error(f"No base agent found for company {company_id}")
+                        await peer.send_message({
+                            "type": "error",
+                            "message": "No agent available"
+                        })
+                        return
+                        
+                    # Initialize agent resources
+                    success = await self.connection_manager.initialize_agent_resources(
+                        client_id,
+                        company_id,
+                        base_agent
+                    )
+                else:  
+                    success = await self.connection_manager.initialize_agent_resources(
+                        client_id,
+                        company_id,
+                        agent_id
+                    )
                 
                 if not success:
                     logger.error(f"Failed to initialize agent resources for {client_id}")
