@@ -74,18 +74,43 @@ except Exception as e:
     logger.error(f"Failed to initialize database: {str(e)}")
     raise
 
+# def get_db():
+#     """Database session dependency with improved error handling for WebSockets"""
+#     db = SessionLocal()
+#     try:
+#         yield db
+#     except Exception as e:
+#         logger.error(f"Database session error: {str(e)}")
+#         # Make sure we rollback on exception
+#         try:
+#             db.rollback()
+#         except Exception:
+#             pass
+#     finally:
+#         # Safely close the session
+#         try:
+#             db.close()
+#         except sqlalchemy.exc.OperationalError as e:
+#             # Handle SSL connection errors gracefully
+#             if "SSL connection has been closed unexpectedly" in str(e):
+#                 logger.warning("SSL connection was already closed, ignoring")
+#             else:
+#                 logger.warning(f"Error closing database connection: {str(e)}")
+#         except Exception as e:
+#             logger.warning(f"Error closing database connection: {str(e)}")
+
+
 def get_db():
-    """Database session dependency with improved error handling for WebSockets"""
+    """Database session dependency with proper error handling"""
     db = SessionLocal()
     try:
         yield db
     except Exception as e:
-        logger.error(f"Database session error: {str(e)}")
-        # Make sure we rollback on exception
-        try:
-            db.rollback()
-        except Exception:
-            pass
+        # Log the error but do not suppress it
+        logger.error(f"Database session error: {e}")
+        db.rollback()
+        # Important: Re-raise the exception to propagate it to FastAPI
+        raise
     finally:
         # Safely close the session
         try:
@@ -98,6 +123,8 @@ def get_db():
                 logger.warning(f"Error closing database connection: {str(e)}")
         except Exception as e:
             logger.warning(f"Error closing database connection: {str(e)}")
+
+
 
 # For long-running processes like WebSockets, use a specific session manager
 @contextmanager
