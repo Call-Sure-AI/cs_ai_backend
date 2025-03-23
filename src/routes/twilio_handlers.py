@@ -425,7 +425,7 @@ resp.status_callback_event = "completed ringing in-progress answered busy failed
 Why: Configures Twilio to send call status events to your callback endpoint, which is essential for proper resource cleanup.
 5. Added Background Cleanup Task
 pythonCopyasync def cleanup_stale_calls():
-    """Cleanup stale call mappings periodically"""
+    Cleanup stale call mappings periodically
     # Cleanup logic...
 Why: Acts as a safety net to clean up any calls that don't properly trigger the status callback, preventing memory leaks.
 6. Improved WebSocket Handling
