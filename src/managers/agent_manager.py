@@ -85,7 +85,7 @@ class AgentManager:
                 type="base",
                 prompt="You are a helpful AI assistant.",
                 confidence_threshold=0.0,
-                active=True
+                is_active=True  # Changed from active to is_active
             )
 
             self.db.add(base_agent)
@@ -106,7 +106,7 @@ class AgentManager:
             logger.error(f"Error ensuring base agent: {str(e)}")
             self.db.rollback()  # Add rollback on exception
             return None
-
+        
     async def initialize_company_agents(self, company_id: str) -> None:
         """Initialize agents with locking and caching"""
         lock = self._initialization_locks.get(company_id)
@@ -127,7 +127,7 @@ class AgentManager:
                 # Get all active agents
                 agents = self.db.query(Agent).filter_by(
                     company_id=company_id,
-                    active=True
+                    is_active=True  # Changed from active to is_active
                 ).all()
 
                 self.company_agents_cache[company_id] = []
@@ -172,7 +172,7 @@ class AgentManager:
                 self.agent_cache.pop(company_id, None)
                 self.company_agents_cache.pop(company_id, None)
                 raise
-
+            
     async def get_company_agents(self, company_id: str) -> List[Dict[str, Any]]:
         """Get all agents for company"""
         if company_id not in self.company_agents_cache:
@@ -197,7 +197,7 @@ class AgentManager:
             base_agent = self.db.query(Agent).filter_by(
                 company_id=company_id,
                 type='base',
-                active=True
+                is_active=True
             ).first()
 
             if base_agent:

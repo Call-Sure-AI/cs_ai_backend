@@ -576,13 +576,30 @@ async def signaling_endpoint(
                 message_type = data.get('type')
                 logger.info(f"Received message of type: {message_type} and data: {data}")
                 
+                # Add this after the signal processing code in the main loop
                 if message_type == 'signal':
-                    # Handle WebRTC signaling
+                    # After attempting to relay the signal
                     to_peer = data.get('to_peer')
-                    if to_peer:
-                        await webrtc_manager.relay_signal(
-                            peer_id, to_peer, data.get('data', {})
-                        )
+                    
+                    # If the relay failed and it was a signal to the server
+                    if to_peer == 'server' and data.get('data', {}).get('type') == 'offer':
+                        try:
+                            # Send a direct answer to keep the connection alive
+                            logger.info(f"Sending direct answer to {peer_id}")
+                            await peer.send_message({
+                                'type': 'signal',
+                                'from_peer': 'server',
+                                'data': {
+                                    'type': 'answer',
+                                    'sdp': {
+                                        'type': 'answer',
+                                        'sdp': 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=msid-semantic: WMS\r\n'
+                                    }
+                                }
+                            })
+                        except Exception as e:
+                            logger.error(f"Error sending direct answer: {str(e)}")
+                            
                 elif message_type == 'audio':
                     # Handle audio messages
                     result = await webrtc_manager.handle_audio_message(peer_id, data)

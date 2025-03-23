@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
 import asyncio
+import json
 
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,19 @@ class PeerConnection:
                 logger.error(f"Cannot send message to peer {self.peer_id}: No WebSocket connection")
                 return False
                 
-            # Use direct WebSocket send with timeout
-            message_str = json.dumps(message)
-            await asyncio.wait_for(
-                self.websocket.send_text(message_str),
-                timeout=5.0
-            )
+            # Try to use WebSocket's built-in send_json if available
+            if hasattr(self.websocket, 'send_json'):
+                await asyncio.wait_for(
+                    self.websocket.send_json(message),
+                    timeout=5.0
+                )
+            else:
+                # Otherwise, manually serialize to JSON
+                message_str = json.dumps(message)
+                await asyncio.wait_for(
+                    self.websocket.send_text(message_str),
+                    timeout=5.0
+                )
             
             # Update last activity timestamp
             self.last_activity = datetime.utcnow()
@@ -60,7 +68,8 @@ class PeerConnection:
         except Exception as e:
             logger.error(f"Error sending message to peer {self.peer_id}: {str(e)}")
             return False
-            
+    
+        
     async def close(self):
         """Close peer connection with proper error handling"""
         try:
