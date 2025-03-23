@@ -18,10 +18,21 @@ class PeerConnection:
         self.message_count = 0
         self.is_closed = False
         
-    async def set_websocket(self, websocket):
-        """Set the WebSocket connection for this peer"""
-        self.websocket = websocket
-        self.is_closed = False
+    async def set_websocket(self, websocket) -> bool:
+        """Set the WebSocket connection and update status flags"""
+        try:
+            self.websocket = websocket
+            self.websocket_connected = True
+            self.last_activity = datetime.utcnow()
+            
+            # Save a custom flag to prevent premature closure detection
+            setattr(self.websocket, '_peer_connected', True)
+            
+            logger.info(f"WebSocket set for peer {self.peer_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting WebSocket: {str(e)}")
+            return False
         
     async def send_message(self, message: dict) -> bool:
         """Send message to peer with improved error handling"""
@@ -30,21 +41,19 @@ class PeerConnection:
                 logger.error(f"Cannot send message to peer {self.peer_id}: No WebSocket connection")
                 return False
                 
-            # Check if WebSocket is closed using a similar method to ConnectionManager
-            if (hasattr(self.websocket, 'client_state') and 
-                self.websocket.client_state.name == "DISCONNECTED"):
-                logger.error(f"Cannot send message to peer {self.peer_id}: WebSocket is disconnected")
-                return False
-                
-            # Send with timeout
+            # Use direct WebSocket send with timeout
+            message_str = json.dumps(message)
             await asyncio.wait_for(
-                self.websocket.send_json(message),
+                self.websocket.send_text(message_str),
                 timeout=5.0
             )
             
-            # Log success for important message types
-            if message.get('type') in ['config', 'signal']:
-                logger.info(f"Successfully sent {message.get('type')} message to peer {self.peer_id}")
+            # Update last activity timestamp
+            self.last_activity = datetime.utcnow()
+            
+            # Log important message types
+            if message.get('type') in ['config', 'signal', 'connection_success']:
+                logger.info(f"Sent {message.get('type')} message to {self.peer_id}")
                 
             return True
             
@@ -53,15 +62,36 @@ class PeerConnection:
             return False
             
     async def close(self):
-        """Close the peer connection"""
-        if self.websocket and not self.is_closed:
-            try:
-                await self.websocket.close()
-            except Exception as e:
-                logger.error(f"Error closing WebSocket for peer {self.peer_id}: {str(e)}")
-            finally:
-                self.is_closed = True
+        """Close peer connection with proper error handling"""
+        try:
+            if hasattr(self, 'websocket') and self.websocket is not None:
+                # Mark as no longer connected before actual close
+                self.websocket_connected = False
+                
+                # Try to send a closure message first
+                try:
+                    await self.send_message({
+                        "type": "connection_closed",
+                        "message": "Peer connection closed by server"
+                    })
+                except Exception:
+                    # Ignore errors in closure message
+                    pass
+                    
+                # Close the WebSocket if not already closed
+                if not hasattr(self.websocket, "_closed") or not self.websocket._closed:
+                    try:
+                        await self.websocket.close()
+                    except Exception as e:
+                        logger.error(f"Error closing WebSocket for peer {self.peer_id}: {str(e)}")
+                        
+            # Clear references
+            self.websocket = None
             
+        except Exception as e:
+            logger.error(f"Error closing peer connection: {str(e)}")
+    
+           
     def is_active(self, timeout_seconds: int = 300) -> bool:
         """Check if the peer connection is active within timeout period"""
         if self.is_closed or not self.websocket:

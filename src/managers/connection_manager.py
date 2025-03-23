@@ -92,9 +92,12 @@ class ConnectionManager:
                 logger.warning("Attempted to send to null websocket")
                 return False
                 
-            # Check if websocket is already closed
-            if self.websocket_is_closed(websocket):
-                logger.warning("Attempted to send to closed websocket")
+            # Modified websocket check - look for a custom flag we set
+            custom_connected = getattr(websocket, '_peer_connected', False)
+            
+            # Only check the built-in status if our custom flag isn't set
+            if not custom_connected and self.websocket_is_closed(websocket):
+                logger.warning("Websocket detected as closed by built-in check")
                 return False
                 
             # Convert to JSON string with UUID handling
@@ -107,8 +110,14 @@ class ConnectionManager:
             )
             
             # Log success for important message types
-            if data.get('type') in ['config', 'connection_ack']:
-                logger.info(f"Successfully sent {data.get('type')} message")
+            if data.get('type') in ['config', 'connection_ack', 'stream_chunk']:
+                msg_type = data.get('type')
+                if msg_type == 'stream_chunk':
+                    # Only log the first chunk to avoid log spam
+                    if data.get('chunk_number', 0) == 1:
+                        logger.info(f"Sending first stream chunk for message {data.get('msg_id', 'unknown')}")
+                else:
+                    logger.info(f"Successfully sent {msg_type} message")
                 
             return True
             
@@ -121,7 +130,7 @@ class ConnectionManager:
             else:
                 logger.error(f"Error sending JSON: {str(e)}", exc_info=True)
             return False
-
+        
     async def _process_batches(self):
         while True:
             batch = []

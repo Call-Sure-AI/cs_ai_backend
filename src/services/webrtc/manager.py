@@ -96,35 +96,70 @@ class WebRTCManager:
             logger.info(f"Unregistered peer {peer_id}")
             
     async def relay_signal(self, from_peer_id: str, to_peer_id: str, signal_data: dict):
-        """Relay WebRTC signaling message between peers with improved error handling"""
-        if to_peer_id in self.peers:
-            to_peer = self.peers[to_peer_id]
-            try:
-                signal_message = {
-                    'type': 'signal',
-                    'from_peer': from_peer_id,
-                    'data': signal_data
-                }
+        """Relay WebRTC signaling message between peers with special handling for server signals"""
+        try:
+            # Special handling for signals sent to the server
+            if to_peer_id == "server":
+                logger.info(f"Processing server-bound signal from {from_peer_id}")
                 
-                # Get WebSocket directly
-                websocket = to_peer.websocket if hasattr(to_peer, 'websocket') else None
-                
-                if websocket and hasattr(websocket, 'send_json'):
-                    # Use WebSocket directly if available
-                    logger.info(f"Relaying signal from {from_peer_id} to {to_peer_id} using direct WebSocket")
-                    await websocket.send_json(signal_message)
-                else:
-                    # Fall back to peer's send_message method
-                    logger.info(f"Relaying signal from {from_peer_id} to {to_peer_id} using peer.send_message")
-                    await to_peer.send_message(signal_message)
+                # Get the sender peer
+                if from_peer_id in self.peers:
+                    from_peer = self.peers[from_peer_id]
                     
-                logger.info(f"Successfully relayed signal from {from_peer_id} to {to_peer_id}")
-                return True
-            except Exception as e:
-                logger.error(f"Error relaying signal: {str(e)}", exc_info=True)
+                    # Handle offer signal
+                    if signal_data.get('type') == 'offer':
+                        logger.info(f"Received offer from {from_peer_id}, sending answer")
+                        
+                        # Create a minimal answer to acknowledge the connection
+                        answer = {
+                            'type': 'signal',
+                            'from_peer': 'server',
+                            'data': {
+                                'type': 'answer',
+                                'sdp': {
+                                    'type': 'answer',
+                                    'sdp': 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=msid-semantic: WMS\r\n'
+                                }
+                            }
+                        }
+                        
+                        # Send the answer back to the client
+                        await from_peer.send_message(answer)
+                        
+                        # Also send a connection success message
+                        await from_peer.send_message({
+                            'type': 'connection_success',
+                            'message': 'WebRTC signaling completed successfully'
+                        })
+                        
+                        logger.info(f"Sent WebRTC answer to {from_peer_id}")
+                        return True
+                
+                logger.warning(f"Cannot process server signal: peer {from_peer_id} not found")
                 return False
-        else:
-            logger.warning(f"Cannot relay signal: target peer {to_peer_id} not found")
+            
+            # Standard peer-to-peer signal relay
+            if to_peer_id in self.peers:
+                to_peer = self.peers[to_peer_id]
+                try:
+                    signal_message = {
+                        'type': 'signal',
+                        'from_peer': from_peer_id,
+                        'data': signal_data
+                    }
+                    
+                    # Send the signal
+                    await to_peer.send_message(signal_message)
+                    logger.info(f"Successfully relayed signal from {from_peer_id} to {to_peer_id}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Error relaying signal: {str(e)}", exc_info=True)
+                    return False
+            else:
+                logger.warning(f"Cannot relay signal: target peer {to_peer_id} not found")
+                return False
+        except Exception as e:
+            logger.error(f"Error in relay_signal: {str(e)}", exc_info=True)
             return False
             
     async def broadcast_to_company(self, company_id: str, message: dict):
@@ -192,7 +227,7 @@ class WebRTCManager:
                 await self.process_streaming_message(peer_id, message_data)
                 
     async def process_streaming_message(self, peer_id: str, message_data: dict, agent_id: Optional[str] = None):
-        """Process streaming message using ConnectionManager"""
+        """Process streaming message using ConnectionManager with improved connection handling"""
         try:
             if peer_id not in self.peers:
                 logger.warning(f"Message received for unknown peer: {peer_id}")
@@ -209,23 +244,16 @@ class WebRTCManager:
                 })
                 return
                 
-            # Map peer to client ID if it's not already a client ID
+            # Map peer to client ID
             client_id = peer_id
-            # if not client_id.startswith('client_'):
-            #     # Generate a temporary client ID if we got a message from a non-client peer
-            #     client_id = f"client_{int(time.time() * 1000)}"
-            #     # Register the websocket with connection manager
-            #     await self.connection_manager.connect(peer.websocket, client_id)
-            #     self.connection_manager.client_companies[client_id] = peer.company_info
-            #     logger.info(f"Created temporary client ID {client_id} for peer {peer_id}")
-                
+            
             # Initialize agent resources if needed
             company_id = peer.company_id
             
             # Check if the client already has agent resources
             if client_id not in self.connection_manager.agent_resources:
                 # Get base agent
-                base_agent ={}
+                base_agent = {}
                 if not agent_id:
                     base_agent = await self.agent_manager.get_base_agent(company_id)
                     if not base_agent:
@@ -235,15 +263,19 @@ class WebRTCManager:
                             "message": "No agent available"
                         })
                         return
-                        
-                    # Initialize agent resources
-                    
                 else:  
                     logger.info(f"Agent ID: {agent_id}, type: {type(agent_id)}")
                     base_agent = {
                         'id': agent_id
                     }
                     
+                # Register WebSocket with connection manager directly
+                if peer.websocket and not hasattr(peer.websocket, '_already_registered'):
+                    logger.info(f"Registering peer's WebSocket with ConnectionManager for {client_id}")
+                    await self.connection_manager.connect(peer.websocket, client_id)
+                    self.connection_manager.client_companies[client_id] = peer.company_info
+                    setattr(peer.websocket, '_already_registered', True)
+                
                 success = await self.connection_manager.initialize_agent_resources(
                         client_id,
                         company_id,
@@ -272,7 +304,7 @@ class WebRTCManager:
                     "type": "error",
                     "message": f"Error processing message: {str(e)}"
                 })
-                
+                        
     def get_company_peers(self, company_id: str) -> list:
         """Get list of active peers for a company"""
         return list(self.company_peers.get(company_id, set()))
