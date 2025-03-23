@@ -174,6 +174,7 @@ class Agent(Base):
     prompt = Column(Text, nullable=False)
     template_id = Column(String(255), nullable=True)
     additional_context = Column(JSONB, nullable=True)
+    advanced_settings = Column(JSONB, nullable=True)
     
     # Vector Store Configuration
     knowledge_base_ids = Column(ARRAY(String), default=[])  # Document IDs for knowledge base
