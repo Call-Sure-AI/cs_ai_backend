@@ -563,6 +563,7 @@ async def signaling_endpoint(
                 # Process received message
                 process_start = time.time()
                 message_type = data.get('type')
+                logger.info(f"Received message of type: {message_type} and data: {data}")
                 
                 if message_type == 'signal':
                     # Handle WebRTC signaling
