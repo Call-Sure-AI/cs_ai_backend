@@ -137,7 +137,7 @@ async def handle_incoming_call(request: Request):
                           "049d0c12-a8d8-4245-b91e-d1e88adccdd5")
 
         # Construct WebRTC signaling URL
-        host = request.headers.get("host") or request.base_url.hostname
+        host = request.headers.get("host") or request.url.netloc
         status_callback_url = f"https://{host}/api/v1/twilio/call-status"
 
         stream_url = f"wss://{host}/api/v1/webrtc/signal/{peer_id}/{company_api_key}/{agent_id}"
@@ -148,16 +148,16 @@ async def handle_incoming_call(request: Request):
         connect = Connect()
         connect.stream(url=stream_url)
         resp.append(connect)
-
+        
         # Add status callback to TwiML
         resp.status_callback = status_callback_url
         resp.status_callback_method = "POST"
         resp.status_callback_event = "completed ringing in-progress answered busy failed no-answer canceled"
-
+        
         # Log and return the TwiML
         resp_xml = resp.to_xml()
         logger.info(f"[TWILIO_CALL_SETUP] TwiML Response: {resp_xml}")
-
+        
         return Response(content=resp_xml, media_type="application/xml")
 
     except Exception as e:
@@ -383,3 +383,94 @@ async def shutdown_event():
         logger.info("Twilio resources cleaned up")
     except Exception as e:
         logger.error(f"Error during Twilio shutdown: {e}")
+
+
+"""
+changes made by Sai
+
+1. Improved Initialization and Cleanup
+Added global variable declarations with proper typing
+pythonCopytwilio_client: Optional[Client] = None
+twilio_validator: Optional[RequestValidator] = None
+manager: Optional[ConnectionManager] = None
+Why: Proper typing improves IDE support and code readability. Using Optional types explicitly indicates these variables can be None.
+Enhanced startup event
+pythonCopy@router.on_event("startup")
+async def startup_event():
+    global twilio_client, twilio_validator, manager
+    # ...
+    # Start the cleanup task
+    asyncio.create_task(cleanup_stale_calls())
+Why: Declaring variables as global ensures they're properly modified. Starting the cleanup task ensures stale calls don't leak memory.
+Added proper shutdown event
+pythonCopy@router.on_event("shutdown")
+async def shutdown_event():
+    global twilio_client
+    # Clean up resources...
+Why: Proper cleanup during shutdown prevents resource leaks and ensures graceful termination.
+2. Added Request Validation
+pythonCopyasync def validate_twilio_request(request: Request) -> bool:
+    # Validation logic...
+Why: This prevents unauthorized access to your endpoints, ensuring that only genuine Twilio requests are processed.
+3. Added Call Status Callback
+pythonCopy@router.post("/call-status")
+async def handle_call_status(request: Request):
+    # Call status handling logic...
+Why: This endpoint receives notifications when calls end, allowing you to immediately clean up resources instead of waiting for the periodic cleanup.
+4. Added TwiML Status Callback Configuration
+pythonCopy# Add status callback to TwiML
+resp.status_callback = status_callback_url
+resp.status_callback_method = "POST"
+resp.status_callback_event = "completed ringing in-progress answered busy failed no-answer canceled"
+Why: Configures Twilio to send call status events to your callback endpoint, which is essential for proper resource cleanup.
+5. Added Background Cleanup Task
+pythonCopyasync def cleanup_stale_calls():
+    """Cleanup stale call mappings periodically"""
+    # Cleanup logic...
+Why: Acts as a safety net to clean up any calls that don't properly trigger the status callback, preventing memory leaks.
+6. Improved WebSocket Handling
+Added timeout to WebSocket receive
+pythonCopymessage = await asyncio.wait_for(
+    websocket.receive_text(),
+    timeout=5.0  # 5 second timeout to check for inactivity
+)
+Why: Prevents the WebSocket from hanging indefinitely if the client disconnects unexpectedly.
+Added inactivity detection
+pythonCopyif time.time() - last_activity > INACTIVITY_TIMEOUT:
+    logger.warning("[TEST_WEBSOCKET] Connection inactive, closing")
+    break
+Why: Automatically closes inactive connections to free up resources.
+Enhanced error handling
+pythonCopytry:
+    # WebSocket logic...
+except asyncio.TimeoutError:
+    # Timeout handling...
+except json.JSONDecodeError as e:
+    # JSON error handling...
+except WebSocketDisconnect:
+    # Disconnect handling...
+except Exception as e:
+    # General error handling...
+finally:
+    # Cleanup...
+Why: Comprehensive error handling ensures the WebSocket connection is properly closed in all error scenarios.
+7. Improved URL Construction
+pythonCopyhost = request.headers.get("host") or request.url.netloc
+Why: This reliably gets the host and port, which is important for constructing correct WebSocket URLs, especially in development environments.
+8. Added Detailed Logging
+pythonCopylogger.info(f"[TWILIO_CALL_SETUP] WebRTC Stream URL: {stream_url}")
+Why: Detailed, context-specific logging makes troubleshooting much easier, especially in production environments.
+9. Resource Tracking in active_calls
+pythonCopyactive_calls[call_sid] = {
+    "peer_id": peer_id,
+    "caller": caller,
+    "start_time": time.time(),
+    "last_activity": time.time()
+}
+Why: Storing detailed information about active calls helps with monitoring, debugging, and proper cleanup.
+10. Added Client Call Mapping
+pythonCopyif not hasattr(request.app.state, 'client_call_mapping'):
+    request.app.state.client_call_mapping = {}
+request.app.state.client_call_mapping[peer_id] = call_sid
+Why: This mapping allows the WebRTC component to connect Twilio calls to the correct WebRTC sessions.
+"""
