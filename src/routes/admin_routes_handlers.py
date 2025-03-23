@@ -580,10 +580,9 @@ def download_from_s3_direct(url):
         s3_client = boto3.client(
             's3',
             region_name='ap-south-1',
-            aws_access_key_id='AKIAST6S66NLF5CSVGVB',
-            aws_secret_access_key='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'
-        )
-        
+            aws_access_key_id = os.environ.get("aws_access_key_id"),
+            aws_secret_access_key = os.environ.get("aws_secret_access_key")
+        )        
         # Try to get the object
         try:
             logger.info(f"Getting object from S3: bucket={bucket_name}, key={key}")
