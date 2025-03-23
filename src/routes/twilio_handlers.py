@@ -130,11 +130,11 @@ async def handle_incoming_call(request: Request):
 
         # Get company API key from settings or use default
         company_api_key = getattr(settings, "DEFAULT_COMPANY_API_KEY", 
-                                 "3d19d78ad75671ad667e4058d9acfda346bd33946c565981c9a22194dfd55a35")
+                                 "8a638fd6a20a9edbe5228bf6c364e44aa10b01f17d7a62b4826ce6cd1593242e")
 
         # Get agent ID from settings or use default
         agent_id = getattr(settings, "DEFAULT_AGENT_ID", 
-                          "049d0c12-a8d8-4245-b91e-d1e88adccdd5")
+                          "48111553-4b98-4f4e-9431-f6ab6cbcfacf")
 
         # Construct WebRTC signaling URL
         host = request.headers.get("host") or request.url.netloc
