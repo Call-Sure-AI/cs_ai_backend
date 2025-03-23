@@ -351,6 +351,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
 
                 if 'bytes' in message:
                     # Raw audio data received - forward directly to WebSocket
+                    logger.info(f"[{connection_id}] Received audio chunk with size {len(message['bytes'])}")
                     audio_data = message['bytes']
                     audio_chunks += 1
                     await speech_service.process_audio_chunk(client_id, audio_data)
@@ -358,6 +359,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                      
                 elif 'text' in message:
                     # Text JSON message received
+                    logger.info(f"[{connection_id}] Received text message: {message['text']}")
                     text_data = message['text']
                     try:
                         data = json.loads(text_data)
