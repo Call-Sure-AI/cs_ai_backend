@@ -359,7 +359,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                      
                 elif 'text' in message:
                     # Text JSON message received
-                    logger.info(f"[{connection_id}] Received text message: {message['text']}")
+                    logger.info(f"[{connection_id}] Received text message size : {len(message['text'])}")
                     text_data = message['text']
                     try:
                         data = json.loads(text_data)
@@ -405,6 +405,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
+                                logger.info(f"[{connection_id}] Received audio payload with size {len(payload)} and type {type(payload)}")
                                 
                                 # Convert Twilio audio format for processing
                                 audio_data = await speech_service.convert_twilio_audio(payload, client_id)
