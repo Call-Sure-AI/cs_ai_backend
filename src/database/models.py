@@ -135,8 +135,7 @@ class Document(Base):
     width = Column(Integer, nullable=True)
     height = Column(Integer, nullable=True)
     image_format = Column(String(20), nullable=True)
-    thumbnail = Column(LargeBinary, nullable=True)  # Store thumbnail for quick loading
-
+    
     
     # Add new fields for image handling
     is_image = Column(Boolean, default=False)
