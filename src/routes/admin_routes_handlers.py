@@ -497,7 +497,8 @@ def list_s3_bucket_objects(bucket_name, prefix=''):
     """
     try:
         import boto3
-        
+        logger.info(f"AWS Access Key ID present: {'Yes' if os.environ.get('aws_access_key_id') else 'No'}")
+        logger.info(f"AWS Secret Access Key present: {'Yes' if os.environ.get('aws_secret_access_key') else 'No'}")
         s3_client = boto3.client(
             's3',
             region_name='ap-south-1',
@@ -577,6 +578,8 @@ def download_from_s3_direct(url):
                 logger.info(f"Using similar object key: {key}")
         
         # Set up S3 client
+        logger.info(f"AWS Access Key ID present: {'Yes' if os.environ.get('aws_access_key_id') else 'No'}")
+        logger.info(f"AWS Secret Access Key present: {'Yes' if os.environ.get('aws_secret_access_key') else 'No'}")
         s3_client = boto3.client(
             's3',
             region_name='ap-south-1',
