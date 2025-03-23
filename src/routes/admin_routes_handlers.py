@@ -7,6 +7,7 @@ from pydantic import BaseModel
 import json
 from datetime import datetime
 import uuid
+import os
 
 from database.config import get_db
 from database.models import Company, Agent, Document, DatabaseIntegration, DocumentType
@@ -500,10 +501,9 @@ def list_s3_bucket_objects(bucket_name, prefix=''):
         s3_client = boto3.client(
             's3',
             region_name='ap-south-1',
-            # aws_access_key_id='AKIAST6S66NLF5CSVGVB',
-            # aws_secret_access_key='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'
-            aws_access_key_id='AKIAST6S66NLI2YMFW6G',
-            aws_secret_access_key='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'
+            
+            aws_access_key_id = os.environ.get("aws_access_key_id"),
+            aws_secret_access_key = os.environ.get("aws_secret_access_key")
         )
         
         response = s3_client.list_objects_v2(
