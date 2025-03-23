@@ -524,6 +524,14 @@ async def signaling_endpoint(
         connect_start = time.time()
         try:
             await websocket.accept()
+            
+            
+            await websocket.send_json({
+                "type": "connection_ack",
+                "status": "success",
+                "peer_id": peer_id
+            })
+            logger.info(f"Connection acknowledgment sent to {peer_id}")
             peer = await webrtc_manager.register_peer(peer_id, company_info, websocket)
             connect_time = time.time() - connect_start
             logger.info(f"WebRTC connection setup took {connect_time:.3f}s")
@@ -534,15 +542,18 @@ async def signaling_endpoint(
         
         # Send ICE servers configuration
         try:
-            await peer.send_message({
+            logger.info(f"Attempting to send ICE config to {peer_id}")
+            config_message = {
                 'type': 'config',
                 'ice_servers': [
                     {'urls': ['stun:stun.l.google.com:19302']},
                     # Add TURN servers here for production
                 ]
-            })
+            }
+            await websocket.send_json(config_message)
+            logger.info(f"ICE config sent successfully to {peer_id}")
         except Exception as e:
-            logger.error(f"Error sending ICE config: {str(e)}")
+            logger.error(f"Error sending ICE config: {str(e)}", exc_info=True)
             websocket_closed = True
             return
         

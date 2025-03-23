@@ -2,6 +2,8 @@
 from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
+import asyncio
+
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +23,34 @@ class PeerConnection:
         self.websocket = websocket
         self.is_closed = False
         
-    async def send_message(self, message: Dict[str, Any]):
-        """Send a message through the peer's WebSocket"""
-        if self.websocket and not self.is_closed:
-            try:
-                self.last_activity = datetime.utcnow()
-                await self.websocket.send_json(message)
-                self.message_count += 1
-            except Exception as e:
-                logger.error(f"Error sending message to peer {self.peer_id}: {str(e)}")
-                self.is_closed = True
+    async def send_message(self, message: dict) -> bool:
+        """Send message to peer with improved error handling"""
+        try:
+            if not hasattr(self, 'websocket') or self.websocket is None:
+                logger.error(f"Cannot send message to peer {self.peer_id}: No WebSocket connection")
+                return False
+                
+            # Check if WebSocket is closed using a similar method to ConnectionManager
+            if (hasattr(self.websocket, 'client_state') and 
+                self.websocket.client_state.name == "DISCONNECTED"):
+                logger.error(f"Cannot send message to peer {self.peer_id}: WebSocket is disconnected")
+                return False
+                
+            # Send with timeout
+            await asyncio.wait_for(
+                self.websocket.send_json(message),
+                timeout=5.0
+            )
+            
+            # Log success for important message types
+            if message.get('type') in ['config', 'signal']:
+                logger.info(f"Successfully sent {message.get('type')} message to peer {self.peer_id}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending message to peer {self.peer_id}: {str(e)}")
+            return False
             
     async def close(self):
         """Close the peer connection"""

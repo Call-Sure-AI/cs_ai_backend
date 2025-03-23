@@ -96,15 +96,36 @@ class WebRTCManager:
             logger.info(f"Unregistered peer {peer_id}")
             
     async def relay_signal(self, from_peer_id: str, to_peer_id: str, signal_data: dict):
-        """Relay WebRTC signaling message between peers"""
+        """Relay WebRTC signaling message between peers with improved error handling"""
         if to_peer_id in self.peers:
             to_peer = self.peers[to_peer_id]
-            await to_peer.send_message({
-                'type': 'signal',
-                'from_peer': from_peer_id,
-                'data': signal_data
-            })
-            logger.debug(f"Relayed signal from {from_peer_id} to {to_peer_id}")
+            try:
+                signal_message = {
+                    'type': 'signal',
+                    'from_peer': from_peer_id,
+                    'data': signal_data
+                }
+                
+                # Get WebSocket directly
+                websocket = to_peer.websocket if hasattr(to_peer, 'websocket') else None
+                
+                if websocket and hasattr(websocket, 'send_json'):
+                    # Use WebSocket directly if available
+                    logger.info(f"Relaying signal from {from_peer_id} to {to_peer_id} using direct WebSocket")
+                    await websocket.send_json(signal_message)
+                else:
+                    # Fall back to peer's send_message method
+                    logger.info(f"Relaying signal from {from_peer_id} to {to_peer_id} using peer.send_message")
+                    await to_peer.send_message(signal_message)
+                    
+                logger.info(f"Successfully relayed signal from {from_peer_id} to {to_peer_id}")
+                return True
+            except Exception as e:
+                logger.error(f"Error relaying signal: {str(e)}", exc_info=True)
+                return False
+        else:
+            logger.warning(f"Cannot relay signal: target peer {to_peer_id} not found")
+            return False
             
     async def broadcast_to_company(self, company_id: str, message: dict):
         """Broadcast message to all peers in a company"""

@@ -87,7 +87,12 @@ class ConnectionManager:
     async def send_json(self, websocket: WebSocket, data: dict) -> bool:
         """Send JSON data with improved error handling and connection validation"""
         try:
-            # First check if websocket is already closed
+            # First check if websocket is None
+            if websocket is None:
+                logger.warning("Attempted to send to null websocket")
+                return False
+                
+            # Check if websocket is already closed
             if self.websocket_is_closed(websocket):
                 logger.warning("Attempted to send to closed websocket")
                 return False
@@ -98,20 +103,24 @@ class ConnectionManager:
             # Send with timeout to prevent hanging
             await asyncio.wait_for(
                 websocket.send_text(json_str),
-                timeout=2.0  # Reduce timeout to 2 seconds
+                timeout=5.0  # Increased timeout to 5 seconds
             )
+            
+            # Log success for important message types
+            if data.get('type') in ['config', 'connection_ack']:
+                logger.info(f"Successfully sent {data.get('type')} message")
+                
             return True
             
         except asyncio.TimeoutError:
-            logger.error("Timeout sending JSON message")
+            logger.error(f"Timeout sending {data.get('type', 'unknown')} message")
             return False
         except Exception as e:
             if "disconnected" in str(e).lower() or "closed" in str(e).lower():
-                logger.warning("Client disconnected during send operation")
+                logger.warning(f"Client disconnected during send operation: {str(e)}")
             else:
                 logger.error(f"Error sending JSON: {str(e)}", exc_info=True)
             return False
-
 
     async def _process_batches(self):
         while True:
@@ -648,11 +657,25 @@ class ConnectionManager:
     def websocket_is_closed(websocket: WebSocket) -> bool:
         """Check if websocket is closed with better error handling"""
         try:
-            return (
-                websocket.client_state.name == "DISCONNECTED" or
-                websocket.application_state.name == "DISCONNECTED" or
-                getattr(websocket, '_closed', False)
-            )
-        except (AttributeError, Exception):
-            # If we can't check the state or any error occurs, assume it's closed for safety
-            return True
+            # Check application and client state if available
+            app_state = getattr(websocket, 'application_state', None)
+            client_state = getattr(websocket, 'client_state', None)
+            
+            # Check explicit closed attribute
+            explicitly_closed = getattr(websocket, '_closed', False)
+            
+            # For FastAPI WebSockets
+            if app_state and client_state:
+                return (app_state.name == "DISCONNECTED" or 
+                        client_state.name == "DISCONNECTED" or
+                        explicitly_closed)
+            
+            # For other WebSocket implementations
+            return explicitly_closed
+        except AttributeError:
+            # Only return True for AttributeError on specific checks
+            return False
+        except Exception as e:
+            # Log other exceptions but don't assume socket is closed
+            logging.error(f"Error checking websocket state: {str(e)}")
+            return False
