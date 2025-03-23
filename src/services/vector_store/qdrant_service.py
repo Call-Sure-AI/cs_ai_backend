@@ -102,14 +102,31 @@ class QdrantService:
             # Ensure collection exists
             await self.setup_collection(company_id)
             
-            # Add points in batches
-            batch_size = 100
+            # Add points in smaller batches to avoid 413 errors
+            batch_size = 10  # Reduce from 100 to 10
             for i in range(0, len(points), batch_size):
                 batch = points[i:i + batch_size]
-                self.qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=batch
-                )
+                try:
+                    self.qdrant_client.upsert(
+                        collection_name=collection_name,
+                        points=batch,
+                        wait=True
+                    )
+                    logger.info(f"Added batch {i//batch_size + 1}/{(len(points)-1)//batch_size + 1} ({len(batch)} points)")
+                except Exception as batch_e:
+                    logger.error(f"Error adding batch {i//batch_size + 1}: {str(batch_e)}")
+                    # Try with even smaller batches if possible
+                    if len(batch) > 1:
+                        for point in batch:
+                            try:
+                                self.qdrant_client.upsert(
+                                    collection_name=collection_name,
+                                    points=[point],
+                                    wait=True
+                                )
+                                logger.info(f"Added single point after batch failure")
+                            except Exception as point_e:
+                                logger.error(f"Failed to add point: {str(point_e)}")
             
             logger.info(f"Added {len(points)} points to {collection_name}")
             return True
