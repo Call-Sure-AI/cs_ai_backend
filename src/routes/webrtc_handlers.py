@@ -405,16 +405,28 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                             media_data = data.get('media', {})
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
-                                logger.info(f"[{connection_id}] Received audio payload with size {len(payload)} and type {type(payload)}")
+                                
+                                # Add detailed logging
+                                # logger.info(f"[{connection_id}] Processing inbound audio payload with length: {len(payload)}")
                                 
                                 # Convert Twilio audio format for processing
                                 audio_data = await speech_service.convert_twilio_audio(payload, client_id)
+                                
+                                # Add more detailed logging
                                 if audio_data:
+                                    logger.info(f"[{connection_id}] Converted audio: {len(audio_data)} bytes")
+                                    
                                     # Process the audio through Deepgram WebSocket
-                                    await speech_service.process_audio_chunk(client_id, audio_data)
+                                    success = await speech_service.process_audio_chunk(client_id, audio_data)
+                                    if success:
+                                        logger.info(f"[{connection_id}] Successfully processed audio chunk")
+                                    else:
+                                        logger.warning(f"[{connection_id}] Failed to process audio chunk")
+                                    
                                     audio_chunks += 1
-                                    # Update last speech time
                                     last_speech_time = time.time()
+                                else:
+                                    logger.debug(f"[{connection_id}] Audio conversion returned None - likely silence")
                                 
                         elif event == 'stop':
                             logger.info(f"[{connection_id}] Call ended")

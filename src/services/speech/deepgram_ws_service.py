@@ -33,7 +33,8 @@ class DeepgramWebSocketService:
             if session_id in self.active_sessions:
                 # Close existing connection if there is one
                 await self.close_session(session_id)
-            
+            api_key_prefix = self.api_key[:4] + "..." if self.api_key else "None"
+            logger.info(f"Initializing Deepgram WebSocket with API key: {api_key_prefix}")
             logger.info(f"Initializing new Deepgram WebSocket session for {session_id}")
             
             # Build the URL with query parameters
@@ -172,18 +173,19 @@ class DeepgramWebSocketService:
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
             
-    async def process_audio_chunk(self, session_id: str, audio_data: bytes):
+    async def process_audio_chunk(self, session_id: str, client_id: str, audio_data: bytes):
         """Process an audio chunk through Deepgram."""
         try:
             if session_id not in self.active_sessions:
                 return False
-
+            logger.info(f"Processing audio chunk for {client_id}: {len(audio_data)} bytes")
             session = self.active_sessions[session_id]
             websocket = session.get("websocket")
 
             if session["connected"] and websocket:
                 try:
                     await websocket.send(audio_data)  # Send raw audio data here
+                    logger.info(f"Audio chunk sent to Deepgram for {client_id}")
                     return True
                 except websockets.exceptions.ConnectionClosed as e:
                     logger.warning(f"WebSocket connection closed while sending audio: {str(e)}")
@@ -203,35 +205,36 @@ class DeepgramWebSocketService:
     async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
         """Convert Twilio's base64 audio format to raw bytes"""
         try:
-            # Decode base64 audio to raw bytes
+            # Ensure we're working with a string, not bytes
+            if isinstance(base64_payload, bytes):
+                base64_payload = base64_payload.decode('utf-8')
+                
+            # Add detailed logging
+            logger.info(f"Converting Twilio audio for {session_id}: payload length={len(base64_payload)}")
+            
+            # Decode base64 audio
             audio_data = base64.b64decode(base64_payload)
-            audio_bytes_len = len(audio_data)
-            logger.debug(f"Decoded audio length: {audio_bytes_len} bytes for {session_id}")
-
-            # Ensure that the audio is not silent
-            silence_level = 128  # Adjust threshold if needed
-            non_silent_bytes = [abs(b - silence_level) for b in audio_data]
+            logger.info(f"Decoded audio data: {len(audio_data)} bytes")
             
-            # Calculate active bytes
-            threshold = 3  # Adjust to fine-tune silence detection
-            active_bytes = sum(1 for b in non_silent_bytes if b > threshold)
-            
-            logger.debug(f"Active bytes: {active_bytes}/{audio_bytes_len} for {session_id} (threshold: {threshold})")
-            
-            # If the audio is silent, skip it
-            if active_bytes == 0:
-                logger.debug(f"Silent audio detected for {session_id}, skipping")
+            # Basic noise analysis
+            if len(audio_data) < 10:
+                logger.warning(f"Audio chunk too small: {len(audio_data)} bytes")
                 return None
+                
+            # Calculate basic audio statistics for debugging
+            audio_bytes = [b for b in audio_data]
+            min_val = min(audio_bytes) if audio_bytes else 0
+            max_val = max(audio_bytes) if audio_bytes else 0
+            avg_val = sum(audio_bytes) / len(audio_bytes) if audio_bytes else 0
             
-            # Check for headers in the audio data (e.g., WAV headers)
-            if audio_data.startswith(b'RIFF'):  # If it's a WAV file, remove the header
-                audio_data = audio_data[44:]  # Standard WAV header length is 44 bytes
-
+            logger.info(f"Audio stats for {session_id}: min={min_val}, max={max_val}, avg={avg_val:.2f}")
+            
+            # Return the decoded audio
             return audio_data
+            
         except Exception as e:
-            logger.error(f"Audio conversion error for {session_id}: {str(e)}")
+            logger.error(f"Error converting Twilio audio for {session_id}: {str(e)}")
             return None
-
     
     async def detect_silence(self, session_id: str, silence_threshold_sec: float = 1.5) -> bool:
         """Check if there has been silence for a specified duration."""
