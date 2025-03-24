@@ -402,32 +402,37 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                                 welcome_sent = True
                         
                         elif event == 'media':
-                            media_data = data.get('media', {})
-                            if media_data.get('track') == 'inbound' and 'payload' in media_data:
-                                payload = media_data.get('payload')
-                                
-                                # Add detailed logging
-                                # logger.info(f"[{connection_id}] Processing inbound audio payload with length: {len(payload)}")
-                                
-                                # Convert Twilio audio format for processing
-                                audio_data = await speech_service.convert_twilio_audio(payload, client_id)
-                                
-                                # Add more detailed logging
-                                if audio_data:
-                                    logger.info(f"[{connection_id}] Converted audio: {len(audio_data)} bytes")
+                            try:
+                                # Your existing code
+                                media_data = data.get('media', {})
+                                if media_data.get('track') == 'inbound' and 'payload' in media_data:
+                                    payload = media_data.get('payload')
                                     
-                                    # Process the audio through Deepgram WebSocket
-                                    success = await speech_service.process_audio_chunk(client_id, audio_data)
-                                    if success:
-                                        logger.info(f"[{connection_id}] Successfully processed audio chunk")
-                                    else:
-                                        logger.warning(f"[{connection_id}] Failed to process audio chunk")
-                                    
-                                    audio_chunks += 1
-                                    last_speech_time = time.time()
-                                else:
-                                    logger.debug(f"[{connection_id}] Audio conversion returned None - likely silence")
-                                
+                                    # Convert Twilio audio format for processing
+                                    audio_data = await speech_service.convert_twilio_audio(payload, client_id)
+                                    if audio_data:
+                                        logger.info(f"[{connection_id}] Converted audio: {len(audio_data)} bytes")
+                                        
+                                        try:
+                                            # Process the audio through Deepgram WebSocket
+                                            success = await speech_service.process_audio_chunk(client_id, audio_data)
+                                            if success:
+                                                logger.info(f"[{connection_id}] Successfully processed audio chunk")
+                                                audio_chunks += 1
+                                                last_speech_time = time.time()
+                                            else:
+                                                logger.warning(f"[{connection_id}] Failed to process audio chunk")
+                                        except Exception as e:
+                                            # Don't let this error crash the entire connection
+                                            logger.error(f"[{connection_id}] Error processing audio chunk: {str(e)}")
+                                            
+                            except Exception as e:
+                                # This is for more serious errors that should close the connection
+                                logger.error(f"[{connection_id}] Error in message loop: {str(e)}")
+                                websocket_closed = True
+                                break
+                            
+                            
                         elif event == 'stop':
                             logger.info(f"[{connection_id}] Call ended")
                             websocket_closed = True
