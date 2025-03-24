@@ -36,7 +36,7 @@ class DeepgramWebSocketService:
             api_key_prefix = self.deepgram_api_key[:4] + "..." if self.api_key else "None"
             logger.info(f"Initializing Deepgram WebSocket with API key: {api_key_prefix}")
             logger.info(f"Initializing new Deepgram WebSocket session for {session_id}")
-            
+            #djflkdsgdnf
             # Build the URL with query parameters
             query_params = [
                 "model=nova-3",
