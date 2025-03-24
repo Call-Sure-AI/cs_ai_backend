@@ -33,7 +33,7 @@ class DeepgramWebSocketService:
             if session_id in self.active_sessions:
                 # Close existing connection if there is one
                 await self.close_session(session_id)
-            api_key_prefix = self.deepgram_api_key[:4] + "..." if self.api_key else "None"
+            api_key_prefix = self.deepgram_api_key[:4] + "..." if self.deepgram_api_key else "None"
             logger.info(f"Initializing Deepgram WebSocket with API key: {api_key_prefix}")
             logger.info(f"Initializing new Deepgram WebSocket session for {session_id}")
             #djflkdsgdnf
