@@ -173,19 +173,19 @@ class DeepgramWebSocketService:
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
             
-    async def process_audio_chunk(self, session_id: str, client_id: str, audio_data: bytes):
+    async def process_audio_chunk(self, session_id: str, audio_data: bytes):
         """Process an audio chunk through Deepgram."""
         try:
             if session_id not in self.active_sessions:
                 return False
-            logger.info(f"Processing audio chunk for {client_id}: {len(audio_data)} bytes")
+            logger.info(f"Processing audio chunk for {session_id}: {len(audio_data)} bytes")
             session = self.active_sessions[session_id]
             websocket = session.get("websocket")
 
             if session["connected"] and websocket:
                 try:
                     await websocket.send(audio_data)  # Send raw audio data here
-                    logger.info(f"Audio chunk sent to Deepgram for {client_id}")
+                    logger.info(f"Audio chunk sent to Deepgram for {session_id}")
                     return True
                 except websockets.exceptions.ConnectionClosed as e:
                     logger.warning(f"WebSocket connection closed while sending audio: {str(e)}")
