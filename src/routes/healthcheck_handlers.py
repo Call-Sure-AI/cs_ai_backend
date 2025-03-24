@@ -162,3 +162,31 @@ async def health_check() -> Dict:
     status["calendar_services"]["google"] = "not_configured"
 
     return status
+
+"""
+Looking at the healthcheck_router code, I've identified several issues:
+- Missing import for DocumentLoader - The code tries to use DocumentLoader() but doesn't import it. This would cause a NameError when trying to run the healthcheck.
+- Duplicate key in the status dictionary - "vector_store" appears twice in the status dictionary, which means the second occurrence will overwrite the first one.
+- Commented-out code that's being referenced - There are multiple commented-out imports and code blocks that make references to them, which could cause confusion about what's supposed to be active.
+- Inconsistent error handling - For the Google Calendar service check, there's a commented line that sets the overall status to "degraded", but it's commented out while the Microsoft Calendar service does set it.
+- No clean separation between initialization and actual health checks - For example, creating a QdrantService() instance doesn't guarantee it's properly configured or functional beyond just instantiating.
+- No timeout handling for the RAG service check - The rag.verify_embeddings() call doesn't have an explicit timeout, which could cause the health check to hang indefinitely if there's a connection issue.
+- Potentially uncaught ImportError - If any import fails (like the Redis module), it would throw an error before the function is even defined.
+- Insufficient error specificity - The error handling catches all exceptions, but different types of failures (like network errors vs. authentication errors) should trigger different status messages.
+
+Changes made by Sai
+- Fixed the missing import for DocumentLoader
+- Removed the duplicate vector_store key in the status dictionary
+- Added proper timeouts to prevent hanging health checks
+- Used more specific exception types for better error classification
+- Added attribute checking with hasattr() before accessing attributes
+- Set Google Calendar status as "not_configured" since it's not being checked
+- Added more logging to help with debugging
+- Used asyncio.to_thread() for potentially blocking operations
+- Added proper imports
+- Added better error handling with specific exception types
+- Added timeouts to prevent hanging
+- Fixed the Redis connection error handling
+- Added checks for the existence of attributes
+- Set correct status for the Google Calendar service
+"""
