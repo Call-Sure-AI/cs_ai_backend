@@ -9,13 +9,16 @@ from config.settings import (
     MICROSOFT_CLIENT_ID
 )
 import logging
+import asyncio
 from services.rag.rag_service import RAGService
-# from services.vector_store.chroma_service import VectorStore
 from services.vector_store.qdrant_service import QdrantService
-# from services.calendar.calendar_service import CalendarConfig, CalendarIntegration, CalendarType
 from services.calendar.async_microsoft_calendar import MicrosoftCalendar, MicrosoftConfig
+from services.dataloaders.data_loaders import DocumentLoader
 from datetime import datetime, timedelta
 import pytz
+
+# from services.vector_store.chroma_service import VectorStore
+# from services.calendar.calendar_service import CalendarConfig, CalendarIntegration, CalendarType
 
 logger = logging.getLogger(__name__)
 healthcheck_router = APIRouter()
@@ -31,9 +34,8 @@ async def health_check() -> Dict:
         "data_services": "operational",  # Add this line
         "vector_store": "connected",
         "rag_service": "operational",
-        "vector_store": "operational",
         "calendar_services": {  # Changed to nested structure for multiple calendar providers
-            "google": "operational",
+            "google": "not_configured",
             "microsoft": "operational"
         }
     }
@@ -46,17 +48,25 @@ async def health_check() -> Dict:
             socket_timeout=2
         )
         redis_client.ping()
+    except redis.ConnectionError as e:
+        logger.error(f"Redis connection error: {str(e)}")
+        status["redis"] = "disconnected"
+        status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Redis healthcheck failed: {str(e)}")
-        status["redis"] = "disconnected"
+        status["redis"] = "unknown_error"
         status["status"] = "degraded"
 
     # Add data service checks
     try:
         document_loader = DocumentLoader()
-        if not document_loader.SUPPORTED_EXTENSIONS:
+        if not hasattr(document_loader, 'SUPPORTED_EXTENSIONS') or not document_loader.SUPPORTED_EXTENSIONS:
             status["data_services"] = "degraded"
             status["status"] = "degraded"
+    except ImportError as e:
+        logger.error(f"Data service import error: {str(e)}")
+        status["data_services"] = "import_error"
+        status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Data service healthcheck failed: {str(e)}")
         status["data_services"] = "unavailable"
@@ -65,7 +75,16 @@ async def health_check() -> Dict:
     # Check Qdrant connection
     try:
         qdrant_service = QdrantService()
-        qdrant_service.client.get_collections()
+        # Add timeout for operation
+        collections = await asyncio.wait_for(
+            asyncio.to_thread(qdrant_service.client.get_collections),
+            timeout=5.0
+        )
+        logger.info(f"Qdrant collections: {collections}")
+    except asyncio.TimeoutError:
+        logger.error("Qdrant connection timeout")
+        status["vector_store"] = "timeout"
+        status["status"] = "degraded"
     except Exception as e:
         logger.error(f"Qdrant healthcheck failed: {str(e)}")
         status["vector_store"] = "disconnected"
@@ -74,7 +93,15 @@ async def health_check() -> Dict:
     # Check RAG service
     try:
         rag = RAGService()
-        await rag.verify_embeddings("test_company")
+        # Add timeout for verification
+        await asyncio.wait_for(
+            rag.verify_embeddings("test_company"),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("RAG service timeout")
+        status["rag_service"] = "timeout"
+        status["status"] = "degraded"
     except Exception as e:
         logger.error(f"RAG service healthcheck failed: {str(e)}")
         status["rag_service"] = "degraded"
@@ -113,10 +140,25 @@ async def health_check() -> Dict:
             client_id=MICROSOFT_CLIENT_ID,
         )
         ms_calendar = MicrosoftCalendar(ms_config)
-        await ms_calendar.setup()
+        # Add timeout for setup
+        await asyncio.wait_for(
+            ms_calendar.setup(),
+            timeout=10.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("Microsoft Calendar connection timeout")
+        status["calendar_services"]["microsoft"] = "timeout"
+        status["status"] = "degraded"
+    except ImportError as e:
+        logger.error(f"Microsoft Calendar import error: {str(e)}")
+        status["calendar_services"]["microsoft"] = "import_error"
+        status["status"] = "degraded"
     except Exception as e:
-        logger.error(f"Microsoft Calendar service healthcheck failed: {str(e)}")
+        logger.error(f"Microsoft Calendar healthcheck failed: {str(e)}")
         status["calendar_services"]["microsoft"] = "degraded"
         status["status"] = "degraded"
+
+    # Set Google Calendar as "not_configured" since it's not being checked
+    status["calendar_services"]["google"] = "not_configured"
 
     return status
