@@ -12,6 +12,20 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+from typing import List, Dict, Optional, Any, AsyncIterator, Tuple
+import logging
+from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import RetrievalQA
+from langchain_core.runnables import RunnableConfig
+from langchain_core.messages import AIMessageChunk, HumanMessage, AIMessage
+import asyncio
+import json
+import time
+from config.settings import settings
+
+logger = logging.getLogger(__name__)
+
 class RAGService:
     def __init__(self, qdrant_service):
         """Initialize RAG service with necessary components"""
@@ -65,6 +79,9 @@ class RAGService:
         
         # Semaphore for limiting concurrent LLM calls
         self._llm_semaphore = asyncio.Semaphore(10)  # Max 10 concurrent LLM requests
+        
+        # Reference to agent manager (set by external code)
+        self.agent_manager = None
     
     async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None) -> RetrievalQA:
         """Create a QA chain using the vector store for a company/agent with cache management"""
@@ -102,6 +119,34 @@ class RAGService:
                 search_kwargs=search_kwargs
             )
             
+            # Get agent-specific prompt if agent_id is provided
+            system_prompt = self.qa_prompt  # Default template
+            if agent_id:
+                try:
+                    # Get agent manager
+                    if not self.agent_manager:
+                        from managers.agent_manager import AgentManager
+                        from database.config import get_db
+                        db = next(get_db())
+                        self.agent_manager = AgentManager(db, self.qdrant_service)
+                    
+                    # Get custom prompt
+                    custom_prompt_text = await self.agent_manager.get_agent_prompt(agent_id)
+                    if custom_prompt_text:
+                        # Make sure the prompt contains necessary RAG placeholders
+                        if "{context}" not in custom_prompt_text:
+                            custom_prompt_text += "\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer: "
+                        
+                        # Create a new prompt template
+                        system_prompt = PromptTemplate(
+                            template=custom_prompt_text,
+                            input_variables=["context", "question"]
+                        )
+                        logger.info(f"Using custom prompt template for agent {agent_id}")
+                except Exception as prompt_error:
+                    logger.error(f"Error loading custom prompt: {str(prompt_error)}")
+                    # Continue with default prompt
+            
             # Build the RetrievalQA chain
             chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
@@ -109,7 +154,7 @@ class RAGService:
                 retriever=retriever,
                 return_source_documents=True,
                 chain_type_kwargs={
-                    "prompt": self.qa_prompt, 
+                    "prompt": system_prompt, 
                     "document_variable_name": "context",
                     "verbose": settings.DEBUG
                 }
@@ -347,6 +392,43 @@ class RAGService:
         finally:
             processing_time = time.time() - start_time
             logger.info(f"RAG processing time: {processing_time:.2f} seconds")
+    
+    def set_agent_manager(self, agent_manager):
+        """Set the agent manager reference"""
+        self.agent_manager = agent_manager
+        logger.info("Agent manager reference set in RAG service")
+    
+    async def clear_cache(self, company_id: Optional[str] = None, agent_id: Optional[str] = None):
+        """Clear cache for a specific company/agent or all caches"""
+        try:
+            if company_id and agent_id:
+                # Clear specific agent cache
+                cache_key = f"{company_id}_{agent_id}"
+                if cache_key in self.chain_cache:
+                    del self.chain_cache[cache_key]
+                    if cache_key in self.chain_timestamps:
+                        del self.chain_timestamps[cache_key]
+                # Clear response cache for this agent
+                response_keys = [k for k in self.response_cache if k.startswith(f"{agent_id}:")]
+                for k in response_keys:
+                    del self.response_cache[k]
+                logger.info(f"Cleared cache for company {company_id}, agent {agent_id}")
+            elif company_id:
+                # Clear all caches for this company
+                company_keys = [k for k in self.chain_cache if k.startswith(f"{company_id}_")]
+                for k in company_keys:
+                    del self.chain_cache[k]
+                    if k in self.chain_timestamps:
+                        del self.chain_timestamps[k]
+                logger.info(f"Cleared all caches for company {company_id}")
+            else:
+                # Clear all caches
+                self.chain_cache.clear()
+                self.chain_timestamps.clear()
+                self.response_cache.clear()
+                logger.info("Cleared all RAG service caches")
+        except Exception as e:
+            logger.error(f"Error clearing cache: {str(e)}")
 
 """
 Key Improvements:
@@ -393,4 +475,17 @@ Improved timestamp-based cache expiration
 Enhanced cache cleanup for when documents change
 
 These improvements make the RAGService more reliable, efficient, and user-friendly. The service now provides better responses, handles errors gracefully, and manages resources more effectively, especially for high-volume production environments.
+
+_____________________________________________________________________
+
+2nd change
+The key changes include:
+- Added integration with the PromptTemplateService through the AgentManager reference
+- Updated the create_qa_chain method to use agent-specific prompt templates
+- Added handling for loading custom prompts with RAG placeholders
+- Added a set_agent_manager method to set the reference to the AgentManager
+- Added a clear_cache method to clear caches when templates are updated
+- Improved error handling for prompt loading failures
+
+This implementation maintains all your existing functionality while adding support for the agent-specific prompt templates system.
 """

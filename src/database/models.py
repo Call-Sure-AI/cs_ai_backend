@@ -11,6 +11,17 @@ import uuid
 
 Base = declarative_base()
 
+class PromptTemplateCategory(str, enum.Enum):
+    GENERAL = "general"
+    CUSTOMER_SERVICE = "customer_service"
+    SALES = "sales"
+    BOOKING = "booking"
+    TECHNICAL = "technical"
+    CONTENT = "content"
+    EDUCATIONAL = "educational"
+    RESEARCH = "research"
+    INDUSTRY_SPECIFIC = "industry_specific"
+
 class AgentType(str, enum.Enum):
     base = "base"
     sales = "sales"
@@ -51,7 +62,7 @@ class Company(Base):
     
     # Configuration
     settings = Column(JSONB, default=dict, nullable=False)
-    prompt_templates = Column(JSONB, default=dict, nullable=False)
+    prompt_templates = relationship("PromptTemplate", back_populates="company", cascade="all, delete-orphan")
     active = Column(Boolean, default=True)
     
     # Qdrant Configuration
@@ -171,7 +182,8 @@ class Agent(Base):
     
     # Core Configuration
     prompt = Column(Text, nullable=False)
-    template_id = Column(String(255), nullable=True)
+    template_id = Column(String(255), nullable=True, index=True)
+    template = relationship("PromptTemplate", back_populates="agents", foreign_keys=[template_id])
     additional_context = Column(JSONB, nullable=True)
     advanced_settings = Column(JSONB, nullable=True)
     
@@ -220,6 +232,31 @@ class Agent(Base):
         'confidence_threshold': 0.7,
         'enable_auto_description': True
     })
+
+class PromptTemplate(Base):
+    __tablename__ = 'PromptTemplate'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    content = Column(Text, nullable=False)
+    category = Column(Enum(PromptTemplateCategory), nullable=False, index=True)
+    agent_type = Column(Enum(AgentType), nullable=False, index=True)
+    
+    variables = Column(JSONB, default=list)
+    is_default = Column(Boolean, default=False)
+    is_system = Column(Boolean, default=False)
+    
+    company_id = Column(String, ForeignKey('Company.id'), nullable=True)
+    user_id = Column(String, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    # Relationships
+    company = relationship("Company", back_populates="prompt_templates")
+    agents = relationship("Agent", back_populates="template")
 
 # Add new ImageProcessingJob model for background processing
 class ImageProcessingJob(Base):

@@ -38,6 +38,44 @@ class AgentManager:
             "failed_conversations": 0
         }
 
+async def initialize(self):
+    """Initialize agent manager"""
+    from services.prompt_template_service import PromptTemplateService
+    self.template_service = PromptTemplateService(self.db)
+    await self.template_service.initialize()
+    logger.info("AgentManager initialized with template service")
+
+async def get_agent_prompt(
+    self,
+    agent_id: str,
+    conversation_id: Optional[str] = None,
+    additional_variables: Optional[Dict[str, Any]] = None
+) -> str:
+    """Get formatted prompt for an agent with conversation context"""
+    try:
+        # Get conversation context if available
+        conversation_context = None
+        if conversation_id:
+            context_messages = await self.get_conversation_context(conversation_id)
+            if context_messages:
+                conversation_context = context_messages
+        
+        # Get formatted prompt from template service
+        if not hasattr(self, 'template_service'):
+            from services.prompt_template_service import PromptTemplateService
+            self.template_service = PromptTemplateService(self.db)
+            await self.template_service.initialize()
+            
+        return await self.template_service.get_agent_prompt(
+            agent_id, 
+            conversation_context,
+            additional_variables
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting agent prompt: {str(e)}")
+        return "You are a helpful AI assistant."
+
     async def ensure_base_agent(self, company_id: str) -> Optional[Dict[str, Any]]:
         """Ensure base agent exists for company with improved error handling"""
         try:
