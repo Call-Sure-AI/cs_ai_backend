@@ -742,69 +742,52 @@ class AgentManager:
 Key Improvements:
 
 Cache Management:
-
 Added timestamp-based cache expiration
 Added proper cache invalidation when data changes
 Implemented cache bypass and revalidation methods
 Added metrics tracking for cache hits/misses
 
-
 Concurrency Control:
-
 Improved lock handling for initialization
 Added database transaction lock to prevent race conditions
 Enhanced double-check locking for better performance
 Safer error handling in async contexts
 
-
 Error Handling:
-
 Added transaction rollback in all error cases
 Isolated database errors from other exceptions
 Better error logging with context information
 Graceful degradation when errors occur
 
-
 Agent Selection Logic:
-
 Improved best agent search with configurable threshold
 Added fallback mechanisms for better reliability
 Enhanced agent search to use vector similarity scores
 Performance monitoring for agent searches
 
-
 Transaction Safety:
-
 Safer database transaction handling
 Proper rollback on errors
 Updated cache only after successful transactions
 Transaction isolation for concurrent operations
 
-
 Conversation and History Management:
-
 Support for both history field and interactions table
 Improved metadata handling for conversations
 Better conversation context retrieval logic
 Efficient interaction storage
 
-
 Maintenance and Monitoring:
-
 Added performance metrics collection
 Added method to get metrics for monitoring
 Enhanced inactive agent cleanup process
 Cache clearing functionality for maintenance
 
-
 New Features:
-
 Added get_agent_by_id method for direct agent access
 Added clear_cache method for management
 Added metadata support for conversations
 Enhanced tracking of conversation success/failure
-
-
 
 These improvements make the AgentManager more robust, efficient, and maintainable, especially in high-concurrency environments. The enhanced error handling and transaction safety help ensure data integrity, while the improved caching reduces database load and improves response times.
 """
