@@ -183,7 +183,10 @@ class Agent(Base):
     # Core Configuration
     prompt = Column(Text, nullable=False)
     template_id = Column(String(255), nullable=True, index=True)
-    template = relationship("PromptTemplate", back_populates="agents", foreign_keys=[template_id])
+    template = relationship("PromptTemplate", 
+                        back_populates="agents", 
+                        primaryjoin="Agent.template_id == PromptTemplate.id",
+                        foreign_keys=[template_id])
     additional_context = Column(JSONB, nullable=True)
     advanced_settings = Column(JSONB, nullable=True)
     
@@ -256,7 +259,7 @@ class PromptTemplate(Base):
     
     # Relationships
     company = relationship("Company", back_populates="prompt_templates")
-    agents = relationship("Agent", back_populates="template")
+    agents = relationship("Agent", back_populates="template", foreign_keys="[Agent.template_id]")
 
 # Add new ImageProcessingJob model for background processing
 class ImageProcessingJob(Base):
