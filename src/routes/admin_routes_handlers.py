@@ -10,7 +10,7 @@ import uuid
 import os
 
 from database.config import get_db
-from database.models import Company, Agent, Document, DatabaseIntegration, DocumentType, PromptTemplate
+from database.models import Company, Agent, Document, DatabaseIntegration, DocumentType
 from services.vector_store.qdrant_service import QdrantService
 from services.rag.rag_service import RAGService
 from services.vector_store.document_embedding import DocumentEmbeddingService
@@ -69,18 +69,16 @@ def is_image_file(content_type: str) -> bool:
     return content_type.startswith('image/')
 
 
+
 # @router.post("/agents")
 # async def create_agent_with_documents(
 #     name: str = Form(...),
 #     type: str = Form(...),
 #     company_id: str = Form(...),
 #     prompt: str = Form(...),
-#     is_active: bool = Form(True),
-#     additional_context: Optional[str] = Form(None),  # JSON string
-#     advanced_settings: Optional[str] = Form(None),  # JSON string
 #     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
-#     user_id: str = Form(...),  # User ID for the agent
-#     id: Optional[str] = Form(None),  # Accept existing ID to prevent duplication
+#     descriptions: Optional[str] = Form(None),
+#     user_id: str = Form(...), # User ID for the agent
 #     db: Session = Depends(get_db)
 # ):
 #     """
@@ -89,69 +87,15 @@ def is_image_file(content_type: str) -> bool:
 #     try:
 #         logger.info(f"Creating agent with name: {name}, type: {type}, company_id: {company_id}")
         
-#         # Check if company_id is "undefined" or not a valid UUID
-#         if company_id == "undefined" or not is_valid_uuid(company_id):
-#             raise HTTPException(status_code=400, detail="Invalid company_id. A valid company ID is required.")
-        
-#         # Verify company exists in the database
-#         company = db.query(Company).filter_by(id=company_id).first()
-#         if not company:
-#             raise HTTPException(status_code=404, detail=f"Company with ID {company_id} not found")
-        
-#         # Parse additional_context if provided
-#         additional_context_dict = {}
-#         if additional_context:
-#             try:
-#                 additional_context_dict = json.loads(additional_context)
-#             except json.JSONDecodeError:
-#                 logger.warning("Invalid additional_context JSON provided")
-        
-#         # Parse advanced_settings if provided
-#         advanced_settings_dict = {}
-#         if advanced_settings:
-#             try:
-#                 advanced_settings_dict = json.loads(advanced_settings)
-#             except json.JSONDecodeError:
-#                 logger.warning("Invalid advanced_settings JSON provided")
-        
-#         # Use provided ID or generate a new one
-#         agent_id = id if id else str(uuid.uuid4())
-#         logger.info(f"Using agent ID: {agent_id} ({'provided' if id else 'generated'})")
-        
-#         # Create agent with fields that match the Prisma schema
+#         # Create agent
 #         agent = Agent(
-#             id=agent_id,  # Use the provided ID or a new one
-#             user_id=user_id,
+#             id=str(uuid.uuid4()),
 #             name=name,
 #             type=type.lower(),
 #             company_id=company_id,
+#             user_id=user_id,
 #             prompt=prompt,
-#             additional_context=additional_context_dict,
-#             advanced_settings=advanced_settings_dict,
-#             is_active=is_active,
-#             # Fields with default values
-#             knowledge_base_ids=[],
-#             database_integration_ids=[],
-#             search_config={
-#                 'score_threshold': 0.7,
-#                 'limit': 5,
-#                 'include_metadata': True
-#             },
-#             confidence_threshold=0.7,
-#             max_response_tokens=200,
-#             temperature=0.7,
-#             total_interactions=0,
-#             average_confidence=0.0,
-#             success_rate=0.0,
-#             average_response_time=0.0,
-#             image_processing_enabled=False,
-#             image_processing_config={
-#                 'max_images': 1000,
-#                 'confidence_threshold': 0.7,
-#                 'enable_auto_description': True
-#             },
-#             created_at=datetime.now(),
-#             updated_at=datetime.now()
+#             active=True
 #         )
         
 #         db.add(agent)
@@ -160,18 +104,23 @@ def is_image_file(content_type: str) -> bool:
 
 #         document_ids = []
 #         image_ids = []
-#         files = []  # List to store file URLs for agent.files field
 
 #         if file_urls:
 #             # Parse file URLs
 #             try:
 #                 urls_list = json.loads(file_urls)
 #                 logger.info(f"File URLs received: {urls_list}")
-#                 # Store file URLs in files field
-#                 files = urls_list
 #             except json.JSONDecodeError:
 #                 logger.error("Invalid file URLs JSON provided")
 #                 raise HTTPException(status_code=400, detail="Invalid file URLs format")
+
+#             # Parse descriptions if provided
+#             descriptions_dict = {}
+#             if descriptions:
+#                 try:
+#                     descriptions_dict = json.loads(descriptions)
+#                 except json.JSONDecodeError:
+#                     logger.warning("Invalid descriptions JSON provided")
 
 #             # Initialize services
 #             qdrant_service = QdrantService()
@@ -212,6 +161,7 @@ def is_image_file(content_type: str) -> bool:
 #                         file_type=content_type,
 #                         type=DocumentType.image if is_image else DocumentType.custom,
 #                         metadata={
+#                             "description": descriptions_dict.get(filename) if is_image else None,
 #                             "original_filename": filename,
 #                             "file_url": url,
 #                             "uploaded_at": datetime.now().isoformat()
@@ -227,6 +177,7 @@ def is_image_file(content_type: str) -> bool:
 #                         image_files.append({
 #                             'id': document.id,
 #                             'content': content,
+#                             'description': descriptions_dict.get(filename),
 #                             'filename': filename,
 #                             'content_type': content_type,
 #                             'metadata': {
@@ -253,9 +204,8 @@ def is_image_file(content_type: str) -> bool:
 #                     logger.error(f"Error processing URL {url}: {str(e)}")
 #                     continue
             
-#             # Update agent with files field
-#             agent.files = files
-#             db.commit()
+#             # Process documents and images in parallel if possible
+#             embed_tasks = []
             
 #             # Embed documents if any
 #             if document_files:
@@ -284,11 +234,7 @@ def is_image_file(content_type: str) -> bool:
 #                 "name": agent.name,
 #                 "type": agent.type,
 #                 "company_id": agent.company_id,
-#                 "prompt": agent.prompt,
-#                 "is_active": agent.is_active,
-#                 "additional_context": agent.additional_context,
-#                 "advanced_settings": agent.advanced_settings,
-#                 "files": agent.files
+#                 "prompt": agent.prompt
 #             },
 #             "documents": {
 #                 "total": len(document_ids) + len(image_ids),
@@ -314,11 +260,10 @@ async def create_agent_with_documents(
     file_urls: Optional[str] = Form(None),  # JSON string of file URLs
     user_id: str = Form(...),  # User ID for the agent
     id: Optional[str] = Form(None),  # Accept existing ID to prevent duplication
-    template_id: Optional[str] = Form(None),  # Add template_id parameter
     db: Session = Depends(get_db)
 ):
     """
-    Create a new agent with support for multiple file URLs and prompt templates
+    Create a new agent with support for multiple file URLs (documents and images)
     """
     try:
         logger.info(f"Creating agent with name: {name}, type: {type}, company_id: {company_id}")
@@ -352,14 +297,6 @@ async def create_agent_with_documents(
         agent_id = id if id else str(uuid.uuid4())
         logger.info(f"Using agent ID: {agent_id} ({'provided' if id else 'generated'})")
         
-        # Verify template_id if provided
-        if template_id:
-            # Check if template exists
-            template = db.query(PromptTemplate).filter_by(id=template_id).first()
-            if not template:
-                logger.warning(f"Template with ID {template_id} not found, will use provided prompt")
-                template_id = None
-        
         # Create agent with fields that match the Prisma schema
         agent = Agent(
             id=agent_id,  # Use the provided ID or a new one
@@ -368,7 +305,6 @@ async def create_agent_with_documents(
             type=type.lower(),
             company_id=company_id,
             prompt=prompt,
-            template_id=template_id,  # Set template_id from parameter
             additional_context=additional_context_dict,
             advanced_settings=advanced_settings_dict,
             is_active=is_active,
@@ -397,51 +333,10 @@ async def create_agent_with_documents(
             updated_at=datetime.now()
         )
         
-        # If no template_id was provided, try to find a default template for this agent type
-        if not template_id:
-            default_template = db.query(PromptTemplate).filter(
-                PromptTemplate.agent_type == type.lower(),
-                PromptTemplate.is_default == True,
-                PromptTemplate.company_id == company_id
-            ).first() or db.query(PromptTemplate).filter(
-                PromptTemplate.agent_type == type.lower(),
-                PromptTemplate.is_default == True,
-                PromptTemplate.is_system == True
-            ).first()
-            
-            if default_template:
-                logger.info(f"Found default template {default_template.id} for agent type {type.lower()}")
-                agent.template_id = default_template.id
-        
         db.add(agent)
         db.commit()
         db.refresh(agent)
 
-        # Initialize PromptTemplateService to format the prompt if needed
-        from services.prompt_template_service import PromptTemplateService
-        template_service = PromptTemplateService(db)
-        
-        # If a template is associated, preformat the prompt with basic variables
-        if agent.template_id:
-            try:
-                template = db.query(PromptTemplate).filter_by(id=agent.template_id).first()
-                if template:
-                    formatted_prompt = await template_service.format_template(
-                        template,
-                        {
-                            "agent_name": agent.name,
-                            "company_name": company.name,
-                            "current_date": datetime.utcnow().strftime("%Y-%m-%d"),
-                            **(agent.additional_context or {})
-                        }
-                    )
-                    # Update the prompt with the formatted version
-                    agent.prompt = formatted_prompt
-                    db.commit()
-            except Exception as format_error:
-                logger.error(f"Error formatting template: {str(format_error)}")
-                # Continue with the original prompt
-        
         document_ids = []
         image_ids = []
         files = []  # List to store file URLs for agent.files field
@@ -561,17 +456,6 @@ async def create_agent_with_documents(
                 if not success:
                     logger.error("Failed to embed images")
 
-        # Get template info for the response
-        template_info = None
-        if agent.template_id:
-            template = db.query(PromptTemplate).filter_by(id=agent.template_id).first()
-            if template:
-                template_info = {
-                    "id": template.id,
-                    "name": template.name,
-                    "category": template.category.value if hasattr(template.category, "value") else template.category
-                }
-
         return {
             "status": "success",
             "agent": {
@@ -581,8 +465,6 @@ async def create_agent_with_documents(
                 "company_id": agent.company_id,
                 "prompt": agent.prompt,
                 "is_active": agent.is_active,
-                "template_id": agent.template_id,
-                "template": template_info,
                 "additional_context": agent.additional_context,
                 "advanced_settings": agent.advanced_settings,
                 "files": agent.files
@@ -598,7 +480,6 @@ async def create_agent_with_documents(
         logger.error(f"Error creating agent: {str(e)}", exc_info=True)
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # Helper function to validate UUID
 def is_valid_uuid(val):

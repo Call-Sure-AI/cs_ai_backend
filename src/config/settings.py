@@ -263,7 +263,6 @@ class Settings(BaseSettings):
     VECTOR_STORE_PATH: str = env_values.get("VECTOR_STORE_PATH", "chroma_db")
     VECTOR_SEARCH_TIMEOUT: float = env_values.get("VECTOR_SEARCH_TIMEOUT", 1.0)
     EMBEDDING_BATCH_SIZE: int = env_values.get("EMBEDDING_BATCH_SIZE", 32)
-    TEMPERATURE: float = env_values.get("TEMPERATURE", 0.1)
     
     # RAG Configuration
     CHUNK_SIZE: int = env_values.get("CHUNK_SIZE", 500)

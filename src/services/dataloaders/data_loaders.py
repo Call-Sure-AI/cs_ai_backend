@@ -3,9 +3,7 @@
 import os
 from typing import List, Dict, Any, Optional
 import pandas as pd
-from sqlalchemy import create_engine, inspect, MetaData
-from sqlalchemy.schema import Table
-from sqlalchemy.sql import select
+from sqlalchemy import create_engine, inspect
 import logging
 from datetime import datetime
 import asyncio
@@ -15,8 +13,6 @@ import magic  # for file type detection
 import textract
 from bs4 import BeautifulSoup
 import json
-from urllib.parse import quote_plus
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,45 +46,19 @@ class DocumentLoader:
                     content = await f.read()
             
             elif file_ext == '.pdf':
-                try:
-                    content = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            textract.process,
-                            file_path,
-                            method='pdfminer'
-                        ),
-                        timeout=300.0  # 300 second timeout
-                    )
-                    content = content.decode('utf-8')
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"PDF extraction with pdfminer failed: {e}, trying alternative method")
-                    try:
-                        # Fallback to another method
-                        content = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                textract.process,
-                                file_path
-                            ),
-                            timeout=60.0
-                        )
-                        content = content.decode('utf-8')
-                    except (asyncio.TimeoutError, Exception) as e2:
-                        logger.error(f"All PDF extraction methods failed: {e2}")
-                        return None
+                content = await asyncio.to_thread(
+                    textract.process,
+                    file_path,
+                    method='pdfminer'
+                )
+                content = content.decode('utf-8')
             
             elif file_ext in ['.docx', '.doc']:
-                try:
-                    content = await asyncio.wait_for(
-                        asyncio.to_thread(textract.process, file_path),
-                        timeout=60.0  # 60 second timeout
-                    )
-                    content = content.decode('utf-8')
-                except asyncio.TimeoutError:
-                    logger.error(f"Document processing timed out for {file_path}")
-                    return None
-                except Exception as e:
-                    logger.error(f"Error processing document {file_path}: {e}")
-                    return None
+                content = await asyncio.to_thread(
+                    textract.process,
+                    file_path
+                )
+                content = content.decode('utf-8')
             
             elif file_ext == '.html':
                 async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
@@ -102,15 +72,11 @@ class DocumentLoader:
                 content = json.dumps(json.loads(json_content))
             
             elif file_ext in ['.csv', '.xlsx']:
-                try:
-                    if file_ext == '.csv':
-                        df = await asyncio.to_thread(pd.read_csv, file_path)
-                    else:
-                        df = await asyncio.to_thread(pd.read_excel, file_path)
-                    content = df.to_string()
-                except Exception as e:
-                    logger.error(f"Error processing {file_ext} file {file_path}: {e}")
-                    return None
+                if file_ext == '.csv':
+                    df = pd.read_csv(file_path)
+                else:
+                    df = pd.read_excel(file_path)
+                content = df.to_string()
             
             return {
                 'id': os.path.basename(file_path),
@@ -139,7 +105,6 @@ class DocumentLoader:
         """Load all supported documents from a directory"""
         documents = []
         try:
-            directory_path = os.path.abspath(directory_path)
             for root, _, files in os.walk(directory_path):
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -186,7 +151,7 @@ class DatabaseLoader:
                 connection_url = (
                     f"{self.supported_databases[db_type]}"
                     f"{connection_params.get('username', '')}:"
-                    f"{quote_plus(connection_params.get('password', ''))}@"
+                    f"{connection_params.get('password', '')}@"
                     f"{connection_params.get('host', 'localhost')}:"
                     f"{connection_params.get('port', '')}/"
                     f"{connection_params.get('database', '')}"
@@ -234,31 +199,22 @@ class DatabaseLoader:
         try:
             # Get total count for batching
             with engine.connect() as conn:
-                logger.warning(f"Using custom query which bypasses SQL injection protection: {custom_query}")
                 if custom_query:
                     query = custom_query
                 else:
-                    # Use SQLAlchemy's Table object and select construct
-                    metadata = MetaData()
-                    table = Table(table_name, metadata, autoload_with=engine)
-                    query = select([table])
+                    query = f"SELECT * FROM {table_name}"
                 
                 # Execute query in batches
+                df = pd.read_sql(
+                    query,
+                    conn,
+                    chunksize=batch_size
+                )
+                
                 data = []
-                try:
-                    df_iterator = pd.read_sql(
-                        query,
-                        conn,
-                        chunksize=batch_size
-                    )
-                    
-                    for chunk in df_iterator:
-                        records = chunk.to_dict('records')
-                        data.extend(records)
-                finally:
-                    # Ensure the iterator is closed
-                    if 'df_iterator' in locals():
-                        df_iterator.close()
+                for chunk in df:
+                    records = chunk.to_dict('records')
+                    data.extend(records)
                 
                 return data
                 
@@ -369,91 +325,3 @@ class DatabaseLoader:
         finally:
             if 'engine' in locals():
                 engine.dispose()
-
-"""
-Changes made by Sai:
-SQL Injection Protection:
-
-Added proper use of SQLAlchemy's Table and select constructs instead of string-based SQL queries
-Warning for custom SQL queries that bypass protections
-
-Password Security:
-Added URL encoding for database passwords using quote_plus
-
-Path Traversal Protection:
-Added os.path.abspath() to canonicalize file paths
-
-Error Handling and Robustness:
-Better PDF Processing:
-Added fallback mechanism for PDF extraction when the primary method fails
-Enhanced error handling for document processing
-
-Timeout Controls:
-Added timeouts for potentially long-running operations using asyncio.wait_for()
-Separate timeouts for different document types (300s for PDFs, 60s for other document types)
-
-Resource Management:
-Added proper cleanup for database iterators
-Ensured engine disposal in a finally block
-Better handling of connection failures
-
-Exception Handling:
-More specific exception types for better error classification
-Enhanced logging for different error scenarios
-Added error handling for CSV and Excel file processing
-
-Performance Improvements:
-Async Processing:
-Proper use of asyncio.to_thread() for CPU-bound operations
-Better async file reading with aiofiles
-
-Database Interaction:
-Added chunked processing for database queries
-Properly handling iterators for data frames
-
-Code Structure and Maintainability:
-
-Imports:
-Added missing imports (MetaData, quote_plus)
-Better organization of imports
-
-
-Documentation:
-Expanded docstrings and comments
-Better documentation of parameters and return values
-
-The code still has a few remaining issues:
-
-Warning Logging Bug:
-
-The load_table_data method always logs a warning about custom queries bypassing SQL injection protection, even when no custom query is provided.
-
-pythonCopylogger.warning(f"Using custom query which bypasses SQL injection protection: {custom_query}")
-if custom_query:
-    query = custom_query
-This should only be logged when a custom query is actually used.
-Memory Management:
-
-It's still missing memory limits for large datasets as recommended earlier.
-
-
-Inefficient Document Processing:
-
-Processing a large number of files in a directory is still done sequentially, which could be inefficient for large directories.
-
-
-Security for Directory Traversal:
-
-While it does use os.path.abspath(), there's still no restriction to specific allowed roots.
-
-
-
-The other improvements look good:
-
-Proper SQL query construction with SQLAlchemy
-Password escaping in database URLs
-Better error handling and timeouts for document processing
-Proper resource cleanup
-
-Most critical security issues have been addressed, but these remaining items would further improve robustness and performance.
-"""
