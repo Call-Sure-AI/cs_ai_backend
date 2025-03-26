@@ -13,6 +13,11 @@ from services.vector_store.qdrant_service import QdrantService
 from managers.agent_manager import AgentManager
 from managers.connection_manager import ConnectionManager
 from config.settings import settings
+from services.speech.deepgram_ws_service import DeepgramWebSocketService
+from services.speech.tts_service import WebSocketTTSService
+import base64
+
+
 import time
 
 logger = logging.getLogger(__name__)
@@ -24,6 +29,19 @@ class WebRTCManager:
         self.agent_manager: Optional[AgentManager] = None
         self.connection_manager: Optional[ConnectionManager] = None
         self.vector_store: Optional[QdrantService] = None
+        
+        # Speech recognition services
+        self.speech_services: Dict[str, DeepgramWebSocketService] = {}
+        
+        # TTS services
+        self.tts_services: Dict[str, WebSocketTTSService] = {}
+        
+        # Transcription buffers
+        self.transcripts: Dict[str, str] = {}
+        
+        # Audio processing flags
+        self.is_processing_audio: Dict[str, bool] = {}
+        
         
         # Initialize audio handler
         audio_save_path = os.path.join(settings.MEDIA_ROOT, 'audio') if hasattr(settings, 'MEDIA_ROOT') else None
@@ -43,6 +61,280 @@ class WebRTCManager:
         if not self.connection_manager:
             self.connection_manager = ConnectionManager(db, vector_store)
             logger.info("Connection manager initialized")
+            
+    
+    async def initialize_speech_service(self, peer_id: str, app=None):
+        """Initialize speech recognition service for a peer"""
+        if peer_id in self.speech_services:
+            return True
+            
+        try:
+            # Create a new Deepgram service
+            speech_service = DeepgramWebSocketService()
+            
+            # Define callback for transcription
+            async def transcription_callback(session_id, transcribed_text):
+                if not transcribed_text:
+                    return
+                    
+                logger.info(f"Transcription for {peer_id}: '{transcribed_text}'")
+                
+                # Store the transcript
+                self.transcripts[peer_id] = transcribed_text
+                
+                # Check if we need to process the transcript (if silence detected)
+                if app and not self.is_processing_audio.get(peer_id, False):
+                    # Check if silence detection task is running
+                    if not hasattr(app.state, 'silence_detection_tasks') or peer_id not in app.state.silence_detection_tasks:
+                        if not hasattr(app.state, 'silence_detection_tasks'):
+                            app.state.silence_detection_tasks = {}
+                            
+                        # Create and store the task
+                        task = asyncio.create_task(self.silence_detection_loop(peer_id, app))
+                        app.state.silence_detection_tasks[peer_id] = task
+                        logger.info(f"Started silence detection for {peer_id}")
+            
+            # Initialize the service
+            success = await speech_service.initialize_session(peer_id, transcription_callback)
+            
+            if success:
+                self.speech_services[peer_id] = speech_service
+                self.transcripts[peer_id] = ""
+                self.is_processing_audio[peer_id] = False
+                logger.info(f"Initialized speech service for {peer_id}")
+                return True
+            else:
+                logger.error(f"Failed to initialize speech service for {peer_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error initializing speech service: {str(e)}")
+            return False
+            
+    async def silence_detection_loop(self, peer_id: str, app):
+        """Loop to detect silence and trigger processing when user stops speaking"""
+        # Silence threshold in seconds
+        SILENCE_THRESHOLD = 2.0
+        last_activity_time = time.time()
+        
+        try:
+            while peer_id in self.peers:
+                current_time = time.time()
+                
+                # Get current transcript
+                transcript = self.transcripts.get(peer_id, "")
+                
+                # Check if we have a new transcript (comparing to last processed time)
+                if transcript and transcript.strip():
+                    # Update last activity time when we have speech
+                    last_activity_time = current_time
+                    
+                # Check for silence
+                silence_duration = current_time - last_activity_time
+                
+                if silence_duration >= SILENCE_THRESHOLD and transcript and not self.is_processing_audio.get(peer_id, False):
+                    logger.info(f"Silence detected for {peer_id}, processing transcript: '{transcript}'")
+                    
+                    # Mark as processing to avoid duplicate processing
+                    self.is_processing_audio[peer_id] = True
+                    
+                    # Process the transcript
+                    try:
+                        message_data = {
+                            "type": "message",
+                            "message": transcript,
+                            "source": "audio"
+                        }
+                        
+                        # Clear the transcript
+                        self.transcripts[peer_id] = ""
+                        
+                        # Process the message
+                        await self.process_message_with_audio_response(peer_id, message_data, app)
+                    except Exception as e:
+                        logger.error(f"Error processing transcript: {str(e)}")
+                    finally:
+                        # Reset processing flag
+                        self.is_processing_audio[peer_id] = False
+                        # Reset last activity time
+                        last_activity_time = time.time()
+                
+                # Sleep before next check
+                await asyncio.sleep(0.1)
+                
+        except asyncio.CancelledError:
+            logger.info(f"Silence detection task cancelled for {peer_id}")
+        except Exception as e:
+            logger.error(f"Error in silence detection loop: {str(e)}")
+        finally:
+            logger.info(f"Silence detection ended for {peer_id}")
+            self.is_processing_audio[peer_id] = False
+            
+    async def process_message_with_audio_response(self, peer_id: str, message_data: dict, app):
+        """Process a message and respond with both text and audio"""
+        if peer_id not in self.peers:
+            logger.warning(f"Client {peer_id} not found")
+            return
+            
+        peer = self.peers[peer_id]
+        msg_id = str(time.time())  # Generate a unique message ID
+        
+        try:
+            # Get connection manager and resources
+            if not self.connection_manager:
+                logger.error("Connection manager not initialized")
+                return
+                
+            # Ensure agent resources are initialized
+            company_id = peer.company_id
+            
+            # Check if agent resources exist, initialize if not
+            if peer_id not in self.connection_manager.agent_resources:
+                # Get agent ID from the peer if available
+                agent_id = getattr(peer, 'agent_id', None)
+                
+                if not agent_id:
+                    # Get base agent
+                    base_agent = await self.agent_manager.get_base_agent(company_id)
+                    if not base_agent:
+                        logger.error(f"No base agent found for company {company_id}")
+                        return
+                    agent_id = base_agent['id']
+                
+                # Initialize agent resources
+                agent_info = {'id': agent_id}
+                success = await self.connection_manager.initialize_agent_resources(
+                    peer_id, company_id, agent_info
+                )
+                
+                if not success:
+                    logger.error(f"Failed to initialize agent resources for {peer_id}")
+                    return
+            
+            # Get agent resources
+            agent_res = self.connection_manager.agent_resources.get(peer_id)
+            if not agent_res:
+                logger.error(f"No agent resources found for {peer_id}")
+                return
+                
+            chain = agent_res.get('chain')
+            rag_service = agent_res.get('rag_service')
+            
+            if not chain or not rag_service:
+                logger.error(f"Missing chain or rag service for {peer_id}")
+                return
+            
+            # Initialize TTS service if needed
+            tts_service = WebSocketTTSService()
+            
+            # Define callback for sending audio back to the client
+            async def send_audio_to_client(audio_bytes):
+                try:
+                    if not hasattr(send_audio_to_client, "chunk_count"):
+                        send_audio_to_client.chunk_count = 0
+                    
+                    send_audio_to_client.chunk_count += 1
+                    chunk_number = send_audio_to_client.chunk_count
+                    
+                    # Encode audio data as base64
+                    encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                    
+                    # Send to client
+                    await peer.send_message({
+                        "type": "stream_chunk",
+                        "text_content": "",  # Empty as this is just audio
+                        "audio_content": encoded_audio,
+                        "chunk_number": chunk_number,
+                        "msg_id": msg_id
+                    })
+                    
+                    if chunk_number == 1:
+                        logger.info(f"Sent first audio chunk to client {peer_id}")
+                        
+                    return True
+                except Exception as e:
+                    logger.error(f"Error sending audio to client: {str(e)}")
+                    return False
+            
+            # Start TTS connection
+            tts_connect_task = asyncio.create_task(tts_service.connect(send_audio_to_client))
+            
+            # Prepare for streaming
+            full_response_text = ""
+            current_sentence = ""
+            chunk_number = 0
+            
+            # Get conversation context if available
+            conversation = self.connection_manager.client_conversations.get(peer_id)
+            conversation_context = {}
+            
+            if conversation:
+                conversation_context = await self.agent_manager.get_conversation_context(conversation['id'])
+            
+            # Wait for TTS connection to be ready
+            connect_success = await tts_connect_task
+            
+            # Stream the response with audio
+            async for token in rag_service.get_answer_with_chain(
+                chain=chain,
+                question=message_data.get('message', ''),
+                conversation_context=conversation_context
+            ):
+                # Add token to text buffers
+                full_response_text += token
+                current_sentence += token
+                chunk_number += 1
+                
+                # Send text chunk to client
+                await peer.send_message({
+                    "type": "stream_chunk",
+                    "text_content": token,
+                    "audio_content": None,  # Audio sent separately via callback
+                    "chunk_number": chunk_number,
+                    "msg_id": msg_id
+                })
+                
+                # Process audio by sentence or clause
+                ends_sentence = any(p in token for p in ".!?")
+                process_on_comma = "," in token and len(current_sentence) > 40
+                
+                if (ends_sentence or process_on_comma) and current_sentence.strip() and connect_success:
+                    # Send sentence for TTS conversion
+                    asyncio.create_task(tts_service.stream_text(current_sentence))
+                    current_sentence = "" if ends_sentence else ""
+                
+                # Small delay to avoid CPU overload
+                await asyncio.sleep(0.01)
+            
+            # Process any remaining text
+            if current_sentence.strip() and connect_success:
+                await tts_service.stream_text(current_sentence)
+            
+            # Wait for audio to finish
+            await asyncio.sleep(0.8)
+            
+            # Close TTS connection
+            if connect_success:
+                await tts_service.stream_end()
+                await asyncio.sleep(0.2)
+                await tts_service.close()
+            
+            # Send end of stream message
+            await peer.send_message({
+                "type": "stream_end",
+                "msg_id": msg_id
+            })
+            
+            logger.info(f"Completed response for {peer_id}: {full_response_text}")
+            return full_response_text
+            
+        except Exception as e:
+            logger.error(f"Error processing message with audio: {str(e)}")
+            # Cleanup if error occurs
+            if 'tts_service' in locals() and tts_service is not None:
+                await tts_service.close()
+            return None
+        
             
     async def register_peer(self, peer_id: str, company_info: dict, websocket: WebSocket) -> PeerConnection:
         """Register a new peer connection"""

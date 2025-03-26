@@ -1,43 +1,31 @@
-# services/speech/deepgram_ws_service.py
-
-import logging
 import asyncio
 import json
-import base64
+import logging
 import os
 import time
 import websockets
-from typing import Dict, Optional, Callable, Awaitable, Any
+from typing import Dict, Callable, Awaitable, Optional
+import random
 
 logger = logging.getLogger(__name__)
 
 class DeepgramWebSocketService:
-    """Service to handle speech-to-text conversion using Deepgram's WebSocket API"""
-    
     def __init__(self):
-        self.active_sessions: Dict[str, Dict] = {}
-        self.deepgram_api_key = os.environ.get("DEEPGRAM_API_KEY")
-        
-        if not self.deepgram_api_key:
-            logger.warning("DEEPGRAM_API_KEY environment variable not set - speech recognition will fail")
-        else:
-            # Log first 4 characters of API key for debugging
-            masked_key = self.deepgram_api_key[:4] + "..." if len(self.deepgram_api_key) > 4 else "too_short"
-            logger.info(f"Deepgram initialized with API key starting with: {masked_key}")
-        
+        self.sessions: Dict[str, Dict] = {}
+        self.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
         self.ws_base_url = "wss://api.deepgram.com/v1/listen"
-        
-    async def initialize_session(self, session_id: str, callback: Optional[Callable[[str, str], Awaitable[Any]]] = None) -> bool:
-        """Initialize a new Deepgram WebSocket session."""
+
+    async def initialize_session(self, session_id: str, callback: Callable[[str, str], Awaitable[None]]) -> bool:
         try:
-            if session_id in self.active_sessions:
-                # Close existing connection if there is one
+            if session_id in self.sessions:
+                logger.info(f"Closing existing session for {session_id}")
                 await self.close_session(session_id)
-            api_key_prefix = self.deepgram_api_key[:4] + "..." if self.deepgram_api_key else "None"
-            logger.info(f"Initializing Deepgram WebSocket with API key: {api_key_prefix}")
-            logger.info(f"Initializing new Deepgram WebSocket session for {session_id}")
-            #djflkdsgdnf
-            # Build the URL with query parameters
+
+            # Check for API key
+            if not self.deepgram_api_key:
+                logger.error(f"No Deepgram API key found for session {session_id}")
+                return False
+
             query_params = [
                 "model=nova-3",
                 "endpointing=true",
@@ -45,238 +33,158 @@ class DeepgramWebSocketService:
                 "smart_format=true",
                 "filler_words=false",
                 "interim_results=false",
-                "encoding=linear16",  # Add encoding type (e.g., 'linear16')
+                "encoding=linear16",
+                "sample_rate=16000"
             ]
+
+            url = f"{self.ws_base_url}?{'&'.join(query_params)}"
+            logger.info(f"Connecting to Deepgram for session {session_id}: {url}")
             
-            # Store session info
-            self.active_sessions[session_id] = {
-                "callback": callback,
-                "url": f"{self.ws_base_url}?{'&'.join(query_params)}",
+            headers = {"Authorization": f"Token {self.deepgram_api_key}"}
+
+            session = {
                 "websocket": None,
                 "connected": False,
-                "buffer": bytearray(),
-                "last_activity": time.time(),
-                "task": None
+                "callback": callback,
+                "task": None,
             }
-            
-            # Start the connection management task
-            session = self.active_sessions[session_id]
-            session["task"] = asyncio.create_task(self._ws_session_handler(session_id))
-            
-            # Wait for connection to establish
-            for _ in range(60):  # Wait up to 6 seconds to establish the connection
-                if session_id not in self.active_sessions:
+            self.sessions[session_id] = session
+
+            session["task"] = asyncio.create_task(self._session_handler(session_id, url, headers))
+
+            # Wait for connection to be established
+            for i in range(50):  # 5 seconds max wait
+                if session_id not in self.sessions:
+                    logger.error(f"Session {session_id} was removed during initialization")
                     return False
                     
-                if self.active_sessions[session_id]["connected"]:
-                    logger.info(f"Deepgram WebSocket connected for {session_id}")
+                if self.sessions[session_id]["connected"]:
+                    logger.info(f"Connected to Deepgram for session {session_id}")
                     return True
                     
+                logger.debug(f"Waiting for Deepgram connection: attempt {i+1}/50")
                 await asyncio.sleep(0.1)
-            
-            logger.warning(f"Timed out waiting for Deepgram connection for {session_id}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error initializing Deepgram session: {str(e)}")
-            return False
 
+            logger.error(f"Timeout waiting for Deepgram connection for session {session_id}")
+            return False
+        except Exception as e:
+            logger.error(f"Error initializing Deepgram session for {session_id}: {str(e)}")
+            return False
         
-    async def _ws_session_handler(self, session_id: str):
-        """Handle the WebSocket session to Deepgram."""
-        websocket = None
-        retries = 3  # Set the retry count
+        
+    async def _session_handler(self, session_id: str, url: str, headers: Dict):
+        retries = 3
+        attempt = 0
 
+        while attempt < retries:
+            try:
+                async with websockets.connect(url, extra_headers=headers) as websocket:
+                    self.sessions[session_id]["websocket"] = websocket
+                    self.sessions[session_id]["connected"] = True
+
+                    async for message in websocket:
+                        await self._handle_message(session_id, message)
+
+            except Exception as e:
+                attempt += 1
+                self.sessions[session_id]["connected"] = False
+                logger.warning(f"Deepgram session {session_id} disconnected: {e}. Retrying {attempt}/{retries}...")
+                await asyncio.sleep(2 ** attempt)
+
+        logger.error(f"Could not reconnect to Deepgram for session {session_id}")
+
+    
+    async def _handle_message(self, session_id: str, message: str):
         try:
-            if session_id not in self.active_sessions:
-                return
-            
-            session = self.active_sessions[session_id]
-            url = session["url"]
-
-            # Set up the headers
-            headers = {
-                "Authorization": f"Token {self.deepgram_api_key}"
-            }
-
-            logger.info(f"Connecting to Deepgram WebSocket for {session_id}")
-            
-            # Retry WebSocket connection if needed
-            for attempt in range(retries):
-                try:
-                    websocket = await websockets.connect(
-                        url,
-                        extra_headers=headers  # For websockets < 10.0
-                    )
-                    session["websocket"] = websocket
-                    session["connected"] = True
-                    logger.info(f"Connected to Deepgram WebSocket for {session_id}")
-                    break  # Connection successful, exit the retry loop
-                except websockets.exceptions.WebSocketException as e:
-                    logger.warning(f"WebSocket connection attempt {attempt + 1} failed: {str(e)}")
-                    if attempt == retries - 1:
-                        logger.error(f"Failed to connect to Deepgram WebSocket after {retries} attempts")
-                        return
-
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff for retries
-
-        except Exception as e:
-            logger.error(f"Error initializing WebSocket session: {str(e)}")
-
-
-            
-    async def _process_message(self, session_id: str, message: str):
-        """Process messages from Deepgram."""
-        try:
-            if session_id not in self.active_sessions:
-                return
-                
-            session = self.active_sessions[session_id]
-            callback = session.get("callback")
-            
-            if not callback:
-                return
-                
-            # Parse JSON response
             data = json.loads(message)
             message_type = data.get("type")
+            logger.info(f"Deepgram message received: {message_type}")
             
-            logger.debug(f"Received message type: {message_type}")
+            if random.random() < 0.1:  # Log ~10% of messages
+                logger.info(f"Deepgram full message: {message[:500]}...")
             
-            # Process different types of messages
+
             if message_type == "Results":
-                # Get transcript from results
-                channel_data = data.get("channel", {})
-                alternatives = channel_data.get("alternatives", [])
+                channel = data.get("channel", {})
+                alternatives = channel.get("alternatives", [])
                 
-                if alternatives and len(alternatives) > 0:
+                if alternatives:
                     transcript = alternatives[0].get("transcript", "").strip()
                     is_final = data.get("is_final", False)
+                    speech_final = data.get("speech_final", False)
                     
-                    if transcript and is_final:
-                        logger.info(f"Final transcript for {session_id}: '{transcript}'")
-                        await callback(session_id, transcript)
-            
+                    logger.info(f"Deepgram transcript: '{transcript}', is_final={is_final}, speech_final={speech_final}")
+                    
+                    if transcript and (is_final or speech_final):
+                        logger.info(f"Final transcript ({session_id}): '{transcript}'")
+                        await self.sessions[session_id]["callback"](session_id, transcript)
+                    elif transcript:
+                        logger.debug(f"Interim transcript ({session_id}): '{transcript}'")
+                else:
+                    logger.debug(f"No transcript alternatives received for {session_id}")
+
             elif message_type == "UtteranceEnd":
-                logger.debug(f"Utterance end detected for {session_id}")
-                await callback(session_id, "")  # Empty string signals utterance end
-                
+                logger.info(f"Utterance end detected for {session_id}")
+                # Notify that an utterance has ended - this helps with silence detection
+                await self.sessions[session_id]["callback"](session_id, "")
+
             elif message_type == "Error":
-                logger.error(f"Deepgram error: {data}")
-                
-            # For debugging - log metadata responses
+                error_message = data.get('message', 'Unknown error')
+                logger.error(f"Deepgram Error for {session_id}: {error_message}")
+
             elif message_type == "Metadata":
-                logger.debug(f"Received Deepgram metadata")
-                
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse message: {message[:100]}...")
-        except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            
-    async def process_audio_chunk(self, session_id: str, audio_data: bytes):
-        """Process an audio chunk through Deepgram."""
-        try:
-            if session_id not in self.active_sessions:
-                return False
-            logger.info(f"Processing audio chunk for {session_id}: {len(audio_data)} bytes")
-            session = self.active_sessions[session_id]
-            websocket = session.get("websocket")
+                logger.info(f"Deepgram Metadata received for {session_id}: {json.dumps(data)}")
 
-            if session["connected"] and websocket:
-                try:
-                    await websocket.send(audio_data)  # Send raw audio data here
-                    logger.info(f"Audio chunk sent to Deepgram for {session_id}")
-                    return True
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.warning(f"WebSocket connection closed while sending audio: {str(e)}")
-                    # Attempt to reconnect or handle the closed connection
-                    await self.reconnect_websocket(session_id)
-                    return False
-                except Exception as e:
-                    logger.error(f"Error sending audio to Deepgram: {str(e)}")
-                    return False
-            return True
+            else:
+                logger.debug(f"Unhandled message type '{message_type}' for session {session_id}")
         except Exception as e:
-            logger.error(f"Error processing audio chunk: {str(e)}")
-            return False
-
+            logger.error(f"Error handling Deepgram message: {str(e)}")
+            logger.error(f"Raw message content: {message[:100]}...")
     
           
-    async def convert_twilio_audio(self, base64_payload: str, session_id: str) -> Optional[bytes]:
-        """Convert Twilio's base64 audio format to raw bytes"""
-        try:
-            # Ensure we're working with a string, not bytes
-            if isinstance(base64_payload, bytes):
-                base64_payload = base64_payload.decode('utf-8')
-                
-            # Add detailed logging
-            logger.info(f"Converting Twilio audio for {session_id}: payload length={len(base64_payload)}")
-            
-            # Decode base64 audio
-            audio_data = base64.b64decode(base64_payload)
-            logger.info(f"Decoded audio data: {len(audio_data)} bytes")
-            
-            # Basic noise analysis
-            if len(audio_data) < 10:
-                logger.warning(f"Audio chunk too small: {len(audio_data)} bytes")
-                return None
-                
-            # Calculate basic audio statistics for debugging
-            audio_bytes = [b for b in audio_data]
-            min_val = min(audio_bytes) if audio_bytes else 0
-            max_val = max(audio_bytes) if audio_bytes else 0
-            avg_val = sum(audio_bytes) / len(audio_bytes) if audio_bytes else 0
-            
-            logger.info(f"Audio stats for {session_id}: min={min_val}, max={max_val}, avg={avg_val:.2f}")
-            
-            # Return the decoded audio
-            return audio_data
-            
-        except Exception as e:
-            logger.error(f"Error converting Twilio audio for {session_id}: {str(e)}")
-            return None
     
-    async def detect_silence(self, session_id: str, silence_threshold_sec: float = 1.5) -> bool:
-        """Check if there has been silence for a specified duration."""
-        if session_id not in self.active_sessions:
+    async def process_audio_chunk(self, session_id: str, audio_data: bytes) -> bool:
+        try:
+            session = self.sessions.get(session_id)
+            if not session:
+                logger.warning(f"No session found for {session_id}")
+                return False
+                
+            if not session["connected"] or not session["websocket"]:
+                logger.warning(f"Session {session_id} is not connected")
+                return False
+                
+            if getattr(self, '_audio_chunk_count', 0) % 100 == 0:
+                audio_sample = ', '.join([str(b) for b in audio_data[:20]])
+                logger.info(f"Audio sample first 20 bytes: [{audio_sample}]")
+            self._audio_chunk_count = getattr(self, '_audio_chunk_count', 0) + 1
+            
+            # Log some information about the audio data occasionally
+            if getattr(self, '_audio_chunk_count', 0) % 50 == 0:
+                logger.debug(f"Sending audio chunk to Deepgram: {len(audio_data)} bytes")
+            self._audio_chunk_count = getattr(self, '_audio_chunk_count', 0) + 1
+                
+            try:
+                await session["websocket"].send(audio_data)
+                return True
+            except websockets.exceptions.ConnectionClosed:
+                logger.error(f"Connection closed for session {session_id}")
+                session["connected"] = False
+                return False
+            except Exception as e:
+                logger.error(f"Error sending audio chunk for {session_id}: {str(e)}")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error processing audio chunk: {str(e)}")
             return False
-
-        current_time = time.time()
-        last_activity = self.active_sessions[session_id]["last_activity"]
-        
-        # Trigger processing if silence threshold is met
-        if (current_time - last_activity) >= silence_threshold_sec:
-            logger.debug(f"Silence detected for {session_id}, sending current buffer")
+    
+    async def close_session(self, session_id: str):
+        session = self.sessions.pop(session_id, None)
+        if session:
+            if session["websocket"]:
+                await session["websocket"].close()
+            if session["task"] and not session["task"].done():
+                session["task"].cancel()
+            logger.info(f"Deepgram session {session_id} closed")
             return True
         return False
-
-        
-    async def close_session(self, session_id: str):
-        """Close a speech recognition session."""
-        if session_id not in self.active_sessions:
-            return False
-            
-        logger.info(f"Closing Deepgram session for {session_id}")
-        
-        try:
-            # Close WebSocket if connected
-            websocket = self.active_sessions[session_id].get("websocket")
-            if websocket:
-                await websocket.close()
-                
-            # Cancel task if running
-            task = self.active_sessions[session_id].get("task")
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                    
-            # Remove session
-            del self.active_sessions[session_id]
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error closing session: {str(e)}")
-            return False

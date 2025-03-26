@@ -781,7 +781,7 @@ async def upload_documents(
 @router.get("/agents/{company_id}")
 async def get_company_agents(company_id: str, db: Session = Depends(get_db)):
     try:
-        agents = db.query(Agent).filter_by(company_id=company_id, active=True).all()
+        agents = db.query(Agent).filter_by(company_id=company_id, is_active=True).all()
         return [{
             "id": agent.id,
             "name": agent.name,

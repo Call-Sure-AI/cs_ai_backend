@@ -77,6 +77,8 @@ async def startup_event():
         app.state.stream_sids = {}
         app.state.call_mappings = {}
         app.state.client_call_mapping = {}
+        app.state.transcripts = {}
+
         logger.info("Initialized shared application state")
     except Exception as e:
         logger.critical(f"Failed to initialize application: {str(e)}", exc_info=True)

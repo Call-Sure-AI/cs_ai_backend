@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import asyncio
 import time
+import random
 
 from services.speech.stt_service import SpeechToTextService
 from database.config import get_db
@@ -44,6 +45,428 @@ from datetime import datetime
 import logging
 import os
 import tempfile
+
+# Audio buffer for each client
+audio_buffers = {}
+# Last speech timestamp for silence detection
+last_speech_timestamps = {}
+# Processing flags to avoid duplicate processing
+is_processing = {}
+# Silence threshold in seconds
+SILENCE_THRESHOLD = 2.0
+
+
+async def handle_audio_stream(peer_id: str, audio_data: bytes, manager: WebRTCManager, app: FastAPI):
+    """Handle incoming audio stream, transcribe and process when silence is detected"""
+    # Initialize speech service if needed
+    if peer_id not in manager.speech_services:
+        speech_service = DeepgramWebSocketService()
+        
+        # Define callback for transcription results
+        async def transcription_callback(session_id, transcribed_text):
+            # Store the transcript in the app state
+            if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
+                app.state.transcripts[peer_id] = transcribed_text
+            else:
+                if not hasattr(app.state, 'transcripts'):
+                    app.state.transcripts = {}
+                app.state.transcripts[peer_id] = transcribed_text
+        
+        # Initialize Deepgram session
+        success = await speech_service.initialize_session(peer_id, transcription_callback)
+        if success:
+            manager.speech_services[peer_id] = speech_service
+    
+    # Process the audio chunk with Deepgram
+    speech_service = manager.speech_services.get(peer_id)
+    if speech_service:
+        await speech_service.process_audio_chunk(peer_id, audio_data)
+    
+    # Start silence detection task if not already running
+    if not hasattr(app.state, 'silence_detection_tasks') or peer_id not in app.state.silence_detection_tasks:
+        if not hasattr(app.state, 'silence_detection_tasks'):
+            app.state.silence_detection_tasks = {}
+        task = asyncio.create_task(silence_detection_loop(peer_id, manager, app))
+        app.state.silence_detection_tasks[peer_id] = task
+        
+# In silence_detection_loop
+async def silence_detection_loop(peer_id: str, manager: WebRTCManager, app: FastAPI):
+    """Loop to detect silence and trigger processing when user stops speaking"""
+    logger.info(f"Starting silence detection loop for {peer_id}")
+    try:
+        loop_count = 0
+        
+        while True:
+            # Check if we should stop the loop
+            if peer_id not in last_speech_timestamps:
+                logger.info(f"Stopping silence detection for {peer_id} - client disconnected")
+                break
+                
+            # Get last speech timestamp
+            last_speech = last_speech_timestamps.get(peer_id, 0)
+            current_time = time.time()
+            silence_duration = current_time - last_speech
+            
+            # Log status periodically
+            if loop_count % 50 == 0:  # Log every ~5 seconds (assuming 0.1s sleep)
+                logger.debug(f"Silence duration for {peer_id}: {silence_duration:.2f}s, threshold: {SILENCE_THRESHOLD}s")
+            loop_count += 1
+            
+            # If silence threshold exceeded and not already processing
+            if silence_duration >= SILENCE_THRESHOLD and not is_processing.get(peer_id, False):
+                logger.info(f"Silence threshold exceeded for {peer_id}: {silence_duration:.2f}s")
+                
+                # Check transcripts to see if we have anything
+                if hasattr(app.state, 'transcripts'):
+                    if peer_id in app.state.transcripts:
+                        transcript = app.state.transcripts.get(peer_id)
+                        logger.info(f"Found transcript for {peer_id}: '{transcript}'")
+                    else:
+                        logger.info(f"No transcript found for {peer_id} in app.state.transcripts")
+                else:
+                    logger.info(f"app.state does not have 'transcripts' attribute")
+                
+                # Check if we have a transcript to process
+                if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
+                    transcript = app.state.transcripts.get(peer_id)
+                    
+                    if transcript and transcript.strip():
+                        logger.info(f"Processing transcript after silence for {peer_id}: '{transcript}'")
+                        
+                        # Mark as processing to avoid duplicate processing
+                        is_processing[peer_id] = True
+                        
+                        # Process the transcript and get response
+                        message_data = {
+                            "type": "message",
+                            "message": transcript,
+                            "source": "audio"
+                        }
+                        
+                        # Clear the transcript to avoid reprocessing
+                        app.state.transcripts[peer_id] = ""
+                        
+                        # Process the message and get response with audio
+                        try:
+                            # Use the existing function for processing with TTS
+                            await process_message_with_audio_response(manager, peer_id, message_data, app)
+                        except Exception as e:
+                            logger.error(f"Error processing transcript: {str(e)}")
+                        finally:
+                            # Reset processing flag
+                            is_processing[peer_id] = False
+                    else:
+                        logger.debug(f"No valid transcript to process for {peer_id}")
+                else:
+                    logger.debug(f"No transcript available for {peer_id}")
+            
+            # Sleep before next check (100ms)
+            await asyncio.sleep(0.1)
+            
+    except asyncio.CancelledError:
+        logger.info(f"Silence detection task cancelled for {peer_id}")
+    except Exception as e:
+        logger.error(f"Error in silence detection loop for {peer_id}: {str(e)}")
+    finally:
+        # Clean up
+        if hasattr(app.state, 'silence_detection_tasks') and peer_id in app.state.silence_detection_tasks:
+            app.state.silence_detection_tasks.pop(peer_id, None)
+            logger.info(f"Removed silence detection task for {peer_id}")
+
+
+# Modify your WebRTCManager class to include speech services
+async def initialize_webrtc_manager(manager):
+    """Initialize the WebRTC manager with needed components for audio processing"""
+    if not hasattr(manager, 'speech_services'):
+        manager.speech_services = {}
+
+async def handle_audio_message(manager, peer_id, message_data, app):
+    """Enhanced audio message handler that adds transcription"""
+    if peer_id not in manager.peers:
+        logger.warning(f"Audio message received for unknown peer: {peer_id}")
+        return {"status": "error", "error": "Unknown peer"}
+    
+    action = message_data.get("action", "")
+    
+    if action == "start_stream":
+        # Initialize speech service on stream start
+        if peer_id not in manager.speech_services:
+            logger.info(f"Creating Deepgram service for {peer_id}")
+            speech_service = DeepgramWebSocketService()
+            
+            # Define callback for transcription results - MODIFIED TO PROCESS IMMEDIATELY
+            async def transcription_callback(session_id, transcribed_text):
+                if not transcribed_text:
+                    logger.debug(f"Empty transcription for {session_id}")
+                    return
+                    
+                logger.info(f"Transcription for {peer_id}: '{transcribed_text}'")
+                
+                # Update timestamp for activity tracking
+                last_speech_timestamps[peer_id] = time.time()
+                
+                # Store the transcript in the app state
+                if not hasattr(app.state, 'transcripts'):
+                    app.state.transcripts = {}
+                app.state.transcripts[peer_id] = transcribed_text
+                logger.info(f"Stored transcript for {peer_id}: '{transcribed_text}'")
+                
+                # IMPORTANT: Process the transcript immediately when received
+                # This ensures we don't need to wait for silence detection
+                message_data = {
+                    "type": "message",
+                    "message": transcribed_text,
+                    "source": "audio"
+                }
+                
+                # Process in a separate task to avoid blocking
+                asyncio.create_task(process_message_with_audio_response(
+                    manager, peer_id, message_data, app
+                ))
+            
+            # Initialize Deepgram session with error handling
+            try:
+                success = await speech_service.initialize_session(peer_id, transcription_callback)
+                if success:
+                    manager.speech_services[peer_id] = speech_service
+                    logger.info(f"Successfully initialized speech service for {peer_id}")
+                    
+                    # Still start silence detection as a backup mechanism
+                    if not hasattr(app.state, 'silence_detection_tasks'):
+                        app.state.silence_detection_tasks = {}
+                    
+                    task = asyncio.create_task(silence_detection_loop(peer_id, manager, app))
+                    app.state.silence_detection_tasks[peer_id] = task
+                    logger.info(f"Started silence detection for {peer_id}")
+                else:
+                    logger.error(f"Failed to initialize speech service for {peer_id}")
+            except Exception as e:
+                logger.error(f"Error initializing speech service: {str(e)}")
+        
+        # Start the audio stream in the audio handler
+        result = await manager.audio_handler.start_audio_stream(
+            peer_id, message_data.get("metadata", {})
+        )
+        logger.info(f"Started audio stream for peer {peer_id}: {result}")
+        return result
+        
+    elif action == "audio_chunk":
+        # Process audio chunk with audio handler
+        result = await manager.audio_handler.process_audio_chunk(
+            peer_id, message_data.get("chunk_data", {})
+        )
+        
+        # Extract audio data (base64 encoded)
+        audio_base64 = message_data.get("chunk_data", {}).get("audio_data", "")
+        if audio_base64:
+            try:
+                # Decode base64 audio data
+                audio_bytes = base64.b64decode(audio_base64)
+                
+                # Log audio chunk details (occasionally to avoid flooding logs)
+                chunkCountRef = getattr(handle_audio_message, "chunkCount", 0) + 1
+                handle_audio_message.chunkCount = chunkCountRef
+                if chunkCountRef % 20 == 0:
+                    audio_sample = ', '.join([str(b) for b in audio_bytes[:20]])
+                    logger.info(f"Audio chunk #{chunkCountRef} for {peer_id}: {len(audio_bytes)} bytes, sample: [{audio_sample}]")
+            
+                # Get or initialize speech service
+                speech_service = manager.speech_services.get(peer_id)
+                if speech_service:
+                    # Process for speech recognition
+                    success = await speech_service.process_audio_chunk(peer_id, audio_bytes)
+                    if not success:
+                        logger.warning(f"Failed to process audio chunk for {peer_id}")
+                    
+                    # Update last speech timestamp
+                    last_speech_timestamps[peer_id] = time.time()
+                else:
+                    logger.warning(f"No speech service available for {peer_id} - reinitializing")
+                    # Re-attempt initialization (this is failsafe code)
+                    if "start_stream" not in message_data:
+                        # Create fake start_stream message to initialize
+                        temp_msg = {
+                            "action": "start_stream",
+                            "metadata": {"auto_recovery": True}
+                        }
+                        await handle_audio_message(manager, peer_id, temp_msg, app)
+            except Exception as e:
+                logger.error(f"Error processing audio for speech recognition: {str(e)}")
+        
+        return result
+        
+    elif action == "end_stream":
+        # End an audio stream
+        result = await manager.audio_handler.end_audio_stream(
+            peer_id, message_data.get("metadata", {})
+        )
+        logger.info(f"Ended audio stream for peer {peer_id}: {result}")
+        
+        # Force processing of any pending audio
+        if peer_id in last_speech_timestamps:
+            logger.info(f"Forcing processing for peer {peer_id} at stream end")
+            last_speech_timestamps[peer_id] = time.time() - SILENCE_THRESHOLD - 1
+            
+            # Check if we have any transcript to process
+            if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
+                transcript = app.state.transcripts.get(peer_id)
+                if transcript and transcript.strip():
+                    logger.info(f"Processing final transcript for {peer_id}: '{transcript}'")
+                    message_data = {
+                        "type": "message",
+                        "message": transcript,
+                        "source": "audio"
+                    }
+                    # Process immediately without waiting for silence detection
+                    asyncio.create_task(process_message_with_audio_response(
+                        manager, peer_id, message_data, app
+                    ))
+                    
+                    # Clear the transcript to avoid reprocessing
+                    app.state.transcripts[peer_id] = ""
+        
+        return result
+        
+    else:
+        logger.warning(f"Unknown audio action: {action}")
+        return {"status": "error", "error": f"Unknown action: {action}"}
+
+async def process_message_with_audio_response(manager, peer_id: str, message_data: dict, app):
+    """Process a message and respond with streaming text and audio"""
+    if peer_id not in manager.peers:
+        logger.warning(f"Client {peer_id} not found")
+        return
+            
+    peer = manager.peers[peer_id]
+    msg_id = str(time.time())  # Unique message ID
+    
+    try:
+        # Ensure agent resources are initialized
+        if not manager.connection_manager:
+            logger.error("Connection manager not initialized")
+            return
+                
+        company_id = peer.company_id
+        
+        # Get or initialize agent resources
+        if peer_id not in manager.connection_manager.agent_resources:
+            base_agent = await manager.agent_manager.get_base_agent(company_id)
+            if not base_agent:
+                logger.error(f"No base agent found for company {company_id}")
+                return
+            
+            agent_info = {'id': base_agent['id']}
+            success = await manager.connection_manager.initialize_agent_resources(
+                peer_id, company_id, agent_info
+            )
+            
+            if not success:
+                logger.error(f"Failed to initialize agent resources for {peer_id}")
+                return
+        
+        # Get agent resources
+        agent_res = manager.connection_manager.agent_resources.get(peer_id)
+        if not agent_res:
+            logger.error(f"No agent resources found for {peer_id}")
+            return
+                
+        chain = agent_res.get('chain')
+        rag_service = agent_res.get('rag_service')
+        
+        if not chain or not rag_service:
+            logger.error(f"Missing chain or rag service for {peer_id}")
+            return
+        
+        # Initialize TTS service
+        tts_service = WebSocketTTSService()
+        
+        # Define callback for sending audio back to the client
+        async def send_audio_to_client(audio_base64):
+            try:
+                await peer.send_message({
+                    "type": "stream_chunk",
+                    "text_content": "",
+                    "audio_content": audio_base64,
+                    "msg_id": msg_id
+                })
+                return True
+            except Exception as e:
+                logger.error(f"Error sending audio chunk: {str(e)}")
+                return False
+        
+        # Start TTS connection
+        connect_success = await tts_service.connect(send_audio_to_client)
+        if not connect_success:
+            logger.error("Failed to connect to TTS service")
+            return
+        
+        # Track incoming text and for optimizing audio generation
+        accumulated_text = ""
+        token_buffer = ""  # To optimize WebSocket traffic
+        
+        # Get conversation context
+        conversation_context = {}
+        conversation = manager.connection_manager.client_conversations.get(peer_id)
+        if conversation:
+            conversation_context = await manager.agent_manager.get_conversation_context(conversation['id'])
+        
+        # Stream response tokens and generate audio immediately
+        async for token in rag_service.get_answer_with_chain(
+            chain=chain,
+            question=message_data.get('message', ''),
+            conversation_context=conversation_context
+        ):
+            # Accumulate text for logging
+            accumulated_text += token
+            token_buffer += token
+            
+            # Send text chunk to client
+            await peer.send_message({
+                "type": "stream_chunk",
+                "text_content": token,
+                "audio_content": None,
+                "msg_id": msg_id
+            })
+            
+            # Send token to TTS service - use small batches to reduce WebSocket traffic
+            # but still maintain near real-time speech generation
+            if len(token_buffer) >= 3 or any(p in token for p in ".!?,"):
+                await tts_service.stream_text(token_buffer)
+                token_buffer = ""
+            
+            # Small delay to prevent overwhelming the WebSocket
+            await asyncio.sleep(0.01)  # Prevent CPU overload
+            
+        # Process any remaining buffered tokens
+        if token_buffer:
+            await tts_service.stream_text(token_buffer)
+            
+        # Flush any remaining text in ElevenLabs buffer
+        await tts_service.flush()
+        
+        # Wait for audio processing to complete
+        await asyncio.sleep(0.8)
+        
+        # Close TTS service properly
+        await tts_service.stream_end()
+        await asyncio.sleep(0.2)  # Give time for processing the end signal
+        await tts_service.close()
+        
+        # Send end of stream message
+        await peer.send_message({
+            "type": "stream_end",
+            "msg_id": msg_id
+        })
+        
+        logger.info(f"Completed response for {peer_id}: {accumulated_text}")
+        return accumulated_text
+            
+    except Exception as e:
+        logger.error(f"Error processing message with audio: {str(e)}")
+        if 'tts_service' in locals() and tts_service is not None:
+            await tts_service.close()
+        return None
+
 
 
 
@@ -474,8 +897,52 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
         logger.info(f"[{connection_id}] Call ended after {message_count} messages ({audio_chunks} audio chunks)")
         
         
-                          
         
+from managers.agent_manager import AgentManager
+
+async def initialize_client_resources(websocket: WebSocket, peer_id: str, company_id: str, agent_id: str, db: Session):
+    """Ensure agent resources are initialized for the client"""
+    try:
+        # Get the connection manager from the app state
+        connection_manager = websocket.app.state.connection_manager
+        
+        # Get base agent if no specific agent is provided
+        if not agent_id:
+            agent_manager = AgentManager(db, QdrantService())
+            base_agent = await agent_manager.get_base_agent(company_id)
+            if not base_agent:
+                logger.error(f"No base agent found for company {company_id}")
+                return False
+            agent_id = base_agent['id']
+        
+        # Prepare agent info
+        agent_info = {
+            'id': agent_id,
+            'company_id': company_id
+        }
+        
+        # Initialize agent resources
+        success = await connection_manager.initialize_agent_resources(
+            peer_id, 
+            company_id, 
+            agent_info
+        )
+        
+        if not success:
+            logger.error(f"Failed to initialize agent resources for {peer_id}")
+            return False
+        
+        # Set the active agent
+        connection_manager.active_agents[peer_id] = agent_id
+        
+        logger.info(f"Successfully initialized agent resources for {peer_id}")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error initializing client resources: {str(e)}")
+        return False
+    
+
 @router.websocket("/signal/{peer_id}/{company_api_key}/{agent_id}")
 async def signaling_endpoint(
     websocket: WebSocket,
@@ -484,7 +951,7 @@ async def signaling_endpoint(
     agent_id: str,
     db: Session = Depends(get_db)
 ):
-    """WebRTC signaling endpoint handler with Twilio Media Streams support"""
+    """WebRTC signaling endpoint handler with audio integration"""
     connection_start = time.time()
     websocket_closed = False
     peer = None
@@ -495,6 +962,9 @@ async def signaling_endpoint(
         if not webrtc_manager.connection_manager and hasattr(websocket.app.state, 'connection_manager'):
             webrtc_manager.connection_manager = websocket.app.state.connection_manager
             logger.info("WebRTC manager linked to connection manager")
+        
+        # Initialize audio-related components
+        await initialize_webrtc_manager(webrtc_manager)
         
         # For Twilio clients, handle differently (no company validation required)
         if is_twilio_client:
@@ -545,7 +1015,6 @@ async def signaling_endpoint(
         try:
             await websocket.accept()
             
-            
             await websocket.send_json({
                 "type": "connection_ack",
                 "status": "success",
@@ -558,6 +1027,27 @@ async def signaling_endpoint(
         except Exception as e:
             logger.error(f"Error accepting connection: {str(e)}")
             websocket_closed = True
+            return
+        
+        # CRITICAL: Initialize client resources IMMEDIATELY after connection
+        resource_init_start = time.time()
+        resources_initialized = await initialize_client_resources(
+            websocket, 
+            peer_id, 
+            str(company.id), 
+            agent_id, 
+            db
+        )
+        resource_init_time = time.time() - resource_init_start
+        logger.info(f"Agent resources initialization took {resource_init_time:.3f}s")
+        
+        if not resources_initialized:
+            logger.error(f"Failed to initialize agent resources for {peer_id}")
+            try:
+                await websocket.close(code=4002)
+                websocket_closed = True
+            except Exception as e:
+                logger.error(f"Error closing websocket after resource init failure: {str(e)}")
             return
         
         # Send ICE servers configuration
@@ -587,19 +1077,21 @@ async def signaling_endpoint(
                 receive_start = time.time()
                 data = await asyncio.wait_for(
                     websocket.receive_json(),
-                    timeout=settings.WS_HEARTBEAT_INTERVAL
+                    timeout=30.0  # Increased timeout for audio processing
                 )
                 receive_time = time.time() - receive_start
                 
                 # Process received message
                 process_start = time.time()
                 message_type = data.get('type')
-                logger.info(f"Received message of type: {message_type} and data: {data}")
                 
-                # Add this after the signal processing code in the main loop
+                if message_type != 'audio' or data.get('action') != 'audio_chunk':
+                    logger.info(f"Received message of type: {message_type}")
+                
                 if message_type == 'signal':
-                    # After attempting to relay the signal
+                    # Handle signaling messages
                     to_peer = data.get('to_peer')
+                    result = await webrtc_manager.relay_signal(peer_id, to_peer, data.get('data', {}))
                     
                     # If the relay failed and it was a signal to the server
                     if to_peer == 'server' and data.get('data', {}).get('type') == 'offer':
@@ -621,16 +1113,19 @@ async def signaling_endpoint(
                             logger.error(f"Error sending direct answer: {str(e)}")
                             
                 elif message_type == 'audio':
-                    # Handle audio messages
-                    result = await webrtc_manager.handle_audio_message(peer_id, data)
+                    # Handle audio messages with enhanced handler
+                    result = await handle_audio_message(webrtc_manager, peer_id, data, websocket.app)
+                    
                     # Send result back to the peer
                     await peer.send_message({
                         "type": "audio_response",
                         "data": result
                     })
+                    
                 elif message_type == 'message':
-                    # Handle streaming messages directly using webrtc_manager
-                    await webrtc_manager.process_streaming_message(peer_id, data, agent_id)
+                    # Handle text messages with audio response
+                    await process_message_with_audio_response(webrtc_manager, peer_id, data, websocket.app)
+                    
                 elif message_type == 'ping':
                     await peer.send_message({'type': 'pong'})
                     
@@ -639,11 +1134,6 @@ async def signaling_endpoint(
                 # Only log detailed timing for non-audio messages to reduce log volume
                 if message_type and message_type != 'audio' or (message_type == 'audio' and data.get('action') != 'audio_chunk'):
                     logger.info(f"Message processing took {process_time:.3f}s for type {message_type}")
-                
-                # Only log complete cycle for non-audio-chunk messages to reduce log volume
-                if message_type and message_type != 'audio' or (message_type == 'audio' and data.get('action') != 'audio_chunk'):
-                    loop_time = time.time() - loop_start
-                    logger.info(f"Complete message cycle took {loop_time:.3f}s")
                 
             except asyncio.TimeoutError:
                 # Send heartbeat
@@ -663,13 +1153,33 @@ async def signaling_endpoint(
     except Exception as e:
         logger.error(f"Error in signaling endpoint: {str(e)}")
     finally:
-        # Clean up peer connection
+        # Clean up peer connection and audio resources
         try:
             cleanup_start = time.time()
-            await webrtc_manager.unregister_peer(peer_id)
-            cleanup_time = time.time() - cleanup_start
             
+            # Clean up speech services
+            if hasattr(webrtc_manager, 'speech_services') and peer_id in webrtc_manager.speech_services:
+                speech_service = webrtc_manager.speech_services.pop(peer_id, None)
+                if speech_service:
+                    await speech_service.close_session(peer_id)
+            
+            # Clean up silence detection tasks
+            if hasattr(websocket.app.state, 'silence_detection_tasks') and peer_id in websocket.app.state.silence_detection_tasks:
+                task = websocket.app.state.silence_detection_tasks.pop(peer_id, None)
+                if task and not task.done():
+                    task.cancel()
+            
+            # Clean up audio buffers
+            audio_buffers.pop(peer_id, None)
+            last_speech_timestamps.pop(peer_id, None)
+            is_processing.pop(peer_id, None)
+            
+            # Unregister peer
+            await webrtc_manager.unregister_peer(peer_id)
+            
+            cleanup_time = time.time() - cleanup_start
             total_time = time.time() - connection_start
+            
             logger.info(
                 f"Connection ended for peer {peer_id}. "
                 f"Duration: {total_time:.3f}s, "
@@ -677,6 +1187,9 @@ async def signaling_endpoint(
             )
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
+    
+
+
 
 
 @router.get("/audio/streams/{company_api_key}")
