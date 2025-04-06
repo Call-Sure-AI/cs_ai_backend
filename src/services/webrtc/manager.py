@@ -41,7 +41,7 @@ class WebRTCManager:
         
         # Audio processing flags
         self.is_processing_audio: Dict[str, bool] = {}
-        
+        self.response_tasks = {}  
         
         # Initialize audio handler
         audio_save_path = os.path.join(settings.MEDIA_ROOT, 'audio') if hasattr(settings, 'MEDIA_ROOT') else None
@@ -170,39 +170,188 @@ class WebRTCManager:
             logger.info(f"Silence detection ended for {peer_id}")
             self.is_processing_audio[peer_id] = False
             
-    async def process_message_with_audio_response(self, peer_id: str, message_data: dict, app):
-        """Process a message and respond with both text and audio"""
-        if peer_id not in self.peers:
-            logger.warning(f"Client {peer_id} not found")
-            return
+    # async def process_message_with_audio_response(self, peer_id: str, message_data: dict, app):
+    #     """Process a message and respond with both text and audio"""
+    #     if peer_id not in self.peers:
+    #         logger.warning(f"Client {peer_id} not found")
+    #         return
             
-        peer = self.peers[peer_id]
-        msg_id = str(time.time())  # Generate a unique message ID
+    #     peer = self.peers[peer_id]
+    #     msg_id = str(time.time())  # Generate a unique message ID
         
+    #     try:
+    #         # Get connection manager and resources
+    #         if not self.connection_manager:
+    #             logger.error("Connection manager not initialized")
+    #             return
+                
+    #         # Ensure agent resources are initialized
+    #         company_id = peer.company_id
+            
+    #         # Check if agent resources exist, initialize if not
+    #         if peer_id not in self.connection_manager.agent_resources:
+    #             # Get agent ID from the peer if available
+    #             agent_id = getattr(peer, 'agent_id', None)
+                
+    #             if not agent_id:
+    #                 # Get base agent
+    #                 base_agent = await self.agent_manager.get_base_agent(company_id)
+    #                 if not base_agent:
+    #                     logger.error(f"No base agent found for company {company_id}")
+    #                     return
+    #                 agent_id = base_agent['id']
+                
+    #             # Initialize agent resources
+    #             agent_info = {'id': agent_id}
+    #             success = await self.connection_manager.initialize_agent_resources(
+    #                 peer_id, company_id, agent_info
+    #             )
+                
+    #             if not success:
+    #                 logger.error(f"Failed to initialize agent resources for {peer_id}")
+    #                 return
+            
+    #         # Get agent resources
+    #         agent_res = self.connection_manager.agent_resources.get(peer_id)
+    #         if not agent_res:
+    #             logger.error(f"No agent resources found for {peer_id}")
+    #             return
+                
+    #         chain = agent_res.get('chain')
+    #         rag_service = agent_res.get('rag_service')
+            
+    #         if not chain or not rag_service:
+    #             logger.error(f"Missing chain or rag service for {peer_id}")
+    #             return
+            
+    #         # Initialize TTS service if needed
+    #         tts_service = WebSocketTTSService()
+            
+    #         # Define callback for sending audio back to the client
+    #         async def send_audio_to_client(audio_bytes):
+    #             try:
+    #                 if not hasattr(send_audio_to_client, "chunk_count"):
+    #                     send_audio_to_client.chunk_count = 0
+                    
+    #                 send_audio_to_client.chunk_count += 1
+    #                 chunk_number = send_audio_to_client.chunk_count
+                    
+    #                 # Encode audio data as base64
+    #                 encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+                    
+    #                 # Send to client
+    #                 await peer.send_message({
+    #                     "type": "stream_chunk",
+    #                     "text_content": "",  # Empty as this is just audio
+    #                     "audio_content": encoded_audio,
+    #                     "chunk_number": chunk_number,
+    #                     "msg_id": msg_id
+    #                 })
+                    
+    #                 if chunk_number == 1:
+    #                     logger.info(f"Sent first audio chunk to client {peer_id}")
+                        
+    #                 return True
+    #             except Exception as e:
+    #                 logger.error(f"Error sending audio to client: {str(e)}")
+    #                 return False
+            
+    #         # Start TTS connection
+    #         tts_connect_task = asyncio.create_task(tts_service.connect(send_audio_to_client))
+            
+    #         # Prepare for streaming
+    #         full_response_text = ""
+    #         current_sentence = ""
+    #         chunk_number = 0
+            
+    #         # Get conversation context if available
+    #         conversation = self.connection_manager.client_conversations.get(peer_id)
+    #         conversation_context = {}
+            
+    #         if conversation:
+    #             conversation_context = await self.agent_manager.get_conversation_context(conversation['id'])
+            
+    #         # Wait for TTS connection to be ready
+    #         connect_success = await tts_connect_task
+            
+    #         # Stream the response with audio
+    #         async for token in rag_service.get_answer_with_chain(
+    #             chain=chain,
+    #             question=message_data.get('message', ''),
+    #             conversation_context=conversation_context
+    #         ):
+    #             # Add token to text buffers
+    #             full_response_text += token
+    #             current_sentence += token
+    #             chunk_number += 1
+                
+    #             # Send text chunk to client
+    #             await peer.send_message({
+    #                 "type": "stream_chunk",
+    #                 "text_content": token,
+    #                 "audio_content": None,  # Audio sent separately via callback
+    #                 "chunk_number": chunk_number,
+    #                 "msg_id": msg_id
+    #             })
+                
+    #             # Process audio by sentence or clause
+    #             ends_sentence = any(p in token for p in ".!?")
+    #             process_on_comma = "," in token and len(current_sentence) > 40
+                
+    #             if (ends_sentence or process_on_comma) and current_sentence.strip() and connect_success:
+    #                 # Send sentence for TTS conversion
+    #                 asyncio.create_task(tts_service.stream_text(current_sentence))
+    #                 current_sentence = "" if ends_sentence else ""
+                
+    #             # Small delay to avoid CPU overload
+    #             await asyncio.sleep(0.01)
+            
+    #         # Process any remaining text
+    #         if current_sentence.strip() and connect_success:
+    #             await tts_service.stream_text(current_sentence)
+            
+    #         # Wait for audio to finish
+    #         await asyncio.sleep(0.8)
+            
+    #         # Close TTS connection
+    #         if connect_success:
+    #             await tts_service.stream_end()
+    #             await asyncio.sleep(0.2)
+    #             await tts_service.close()
+            
+    #         # Send end of stream message
+    #         await peer.send_message({
+    #             "type": "stream_end",
+    #             "msg_id": msg_id
+    #         })
+            
+    #         logger.info(f"Completed response for {peer_id}: {full_response_text}")
+    #         return full_response_text
+            
+    #     except Exception as e:
+    #         logger.error(f"Error processing message with audio: {str(e)}")
+    #         # Cleanup if error occurs
+    #         if 'tts_service' in locals() and tts_service is not None:
+    #             await tts_service.close()
+    #         return None
+    
+    async def _process_response(self, peer_id: str, peer, msg_id: str, message_data: dict, app):
         try:
-            # Get connection manager and resources
+            # Ensure agent resources are initialized
             if not self.connection_manager:
                 logger.error("Connection manager not initialized")
                 return
-                
-            # Ensure agent resources are initialized
+                    
             company_id = peer.company_id
             
-            # Check if agent resources exist, initialize if not
+            # Get or initialize agent resources
             if peer_id not in self.connection_manager.agent_resources:
-                # Get agent ID from the peer if available
-                agent_id = getattr(peer, 'agent_id', None)
+                base_agent = await self.agent_manager.get_base_agent(company_id)
+                if not base_agent:
+                    logger.error(f"No base agent found for company {company_id}")
+                    return
                 
-                if not agent_id:
-                    # Get base agent
-                    base_agent = await self.agent_manager.get_base_agent(company_id)
-                    if not base_agent:
-                        logger.error(f"No base agent found for company {company_id}")
-                        return
-                    agent_id = base_agent['id']
-                
-                # Initialize agent resources
-                agent_info = {'id': agent_id}
+                agent_info = {'id': base_agent['id']}
                 success = await self.connection_manager.initialize_agent_resources(
                     peer_id, company_id, agent_info
                 )
@@ -216,7 +365,7 @@ class WebRTCManager:
             if not agent_res:
                 logger.error(f"No agent resources found for {peer_id}")
                 return
-                
+                    
             chain = agent_res.get('chain')
             rag_service = agent_res.get('rag_service')
             
@@ -224,117 +373,149 @@ class WebRTCManager:
                 logger.error(f"Missing chain or rag service for {peer_id}")
                 return
             
-            # Initialize TTS service if needed
+            # Initialize TTS service
             tts_service = WebSocketTTSService()
             
             # Define callback for sending audio back to the client
-            async def send_audio_to_client(audio_bytes):
+            async def send_audio_to_client(audio_base64):
                 try:
-                    if not hasattr(send_audio_to_client, "chunk_count"):
-                        send_audio_to_client.chunk_count = 0
-                    
-                    send_audio_to_client.chunk_count += 1
-                    chunk_number = send_audio_to_client.chunk_count
-                    
-                    # Encode audio data as base64
-                    encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
-                    
-                    # Send to client
                     await peer.send_message({
                         "type": "stream_chunk",
-                        "text_content": "",  # Empty as this is just audio
-                        "audio_content": encoded_audio,
-                        "chunk_number": chunk_number,
+                        "text_content": "",
+                        "audio_content": audio_base64,
                         "msg_id": msg_id
                     })
-                    
-                    if chunk_number == 1:
-                        logger.info(f"Sent first audio chunk to client {peer_id}")
-                        
                     return True
                 except Exception as e:
-                    logger.error(f"Error sending audio to client: {str(e)}")
+                    logger.error(f"Error sending audio chunk: {str(e)}")
                     return False
             
             # Start TTS connection
-            tts_connect_task = asyncio.create_task(tts_service.connect(send_audio_to_client))
+            connect_success = await tts_service.connect(send_audio_to_client)
+            if not connect_success:
+                logger.error("Failed to connect to TTS service")
+                return
             
-            # Prepare for streaming
-            full_response_text = ""
-            current_sentence = ""
-            chunk_number = 0
+            # Track incoming text and for optimizing audio generation
+            accumulated_text = ""
+            token_buffer = ""  # To optimize WebSocket traffic
             
-            # Get conversation context if available
-            conversation = self.connection_manager.client_conversations.get(peer_id)
+            # Get conversation context
             conversation_context = {}
-            
+            conversation = self.connection_manager.client_conversations.get(peer_id)
             if conversation:
                 conversation_context = await self.agent_manager.get_conversation_context(conversation['id'])
             
-            # Wait for TTS connection to be ready
-            connect_success = await tts_connect_task
+            # Stream response tokens and generate audio immediately
+            try:
+                # Add check for task cancellation
+                async for token in rag_service.get_answer_with_chain(
+                    chain=chain,
+                    question=message_data.get('message', ''),
+                    conversation_context=conversation_context
+                ):
+                    # Check if the task was cancelled
+                    if asyncio.current_task().cancelled():
+                        logger.info(f"Response generation cancelled during streaming for {peer_id}")
+                        break
+                    
+                    # Accumulate text for logging
+                    accumulated_text += token
+                    token_buffer += token
+                    
+                    # Send text chunk to client
+                    await peer.send_message({
+                        "type": "stream_chunk",
+                        "text_content": token,
+                        "audio_content": None,
+                        "msg_id": msg_id
+                    })
+                    
+                    # Send token to TTS service in small batches
+                    if len(token_buffer) >= 3 or any(p in token for p in ".!?,"):
+                        await tts_service.stream_text(token_buffer)
+                        token_buffer = ""
+                    
+                    # Small delay to prevent overwhelming the WebSocket
+                    await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                logger.info(f"Response streaming cancelled for {peer_id}")
+                raise
             
-            # Stream the response with audio
-            async for token in rag_service.get_answer_with_chain(
-                chain=chain,
-                question=message_data.get('message', ''),
-                conversation_context=conversation_context
-            ):
-                # Add token to text buffers
-                full_response_text += token
-                current_sentence += token
-                chunk_number += 1
+            # Process any remaining buffered tokens
+            if token_buffer and not asyncio.current_task().cancelled():
+                await tts_service.stream_text(token_buffer)
                 
-                # Send text chunk to client
-                await peer.send_message({
-                    "type": "stream_chunk",
-                    "text_content": token,
-                    "audio_content": None,  # Audio sent separately via callback
-                    "chunk_number": chunk_number,
-                    "msg_id": msg_id
-                })
-                
-                # Process audio by sentence or clause
-                ends_sentence = any(p in token for p in ".!?")
-                process_on_comma = "," in token and len(current_sentence) > 40
-                
-                if (ends_sentence or process_on_comma) and current_sentence.strip() and connect_success:
-                    # Send sentence for TTS conversion
-                    asyncio.create_task(tts_service.stream_text(current_sentence))
-                    current_sentence = "" if ends_sentence else ""
-                
-                # Small delay to avoid CPU overload
-                await asyncio.sleep(0.01)
+            # Flush any remaining text in ElevenLabs buffer
+            if not asyncio.current_task().cancelled():
+                await tts_service.flush()
             
-            # Process any remaining text
-            if current_sentence.strip() and connect_success:
-                await tts_service.stream_text(current_sentence)
-            
-            # Wait for audio to finish
+            # Wait for audio processing to complete
             await asyncio.sleep(0.8)
             
-            # Close TTS connection
-            if connect_success:
-                await tts_service.stream_end()
-                await asyncio.sleep(0.2)
-                await tts_service.close()
+            # Close TTS service properly
+            await tts_service.stream_end()
+            await asyncio.sleep(0.2)  # Give time for processing the end signal
+            await tts_service.close()
             
-            # Send end of stream message
-            await peer.send_message({
-                "type": "stream_end",
-                "msg_id": msg_id
-            })
+            # Send end of stream message if not cancelled
+            if not asyncio.current_task().cancelled():
+                await peer.send_message({
+                    "type": "stream_end",
+                    "msg_id": msg_id
+                })
             
-            logger.info(f"Completed response for {peer_id}: {full_response_text}")
-            return full_response_text
-            
+            logger.info(f"Completed response for {peer_id}: {accumulated_text}")
+            return accumulated_text
+                
+        except asyncio.CancelledError:
+            logger.info(f"Response processing cancelled for {peer_id}")
+            raise
         except Exception as e:
             logger.error(f"Error processing message with audio: {str(e)}")
-            # Cleanup if error occurs
             if 'tts_service' in locals() and tts_service is not None:
                 await tts_service.close()
             return None
+    
+    
+    async def process_message_with_audio_response(self, peer_id: str, message_data: dict, app):
+        """Process a message and respond with streaming text and audio"""
+        if peer_id not in self.peers:
+            logger.warning(f"Client {peer_id} not found")
+            return
+                
+        peer = self.peers[peer_id]
+        msg_id = str(time.time())  # Unique message ID
         
+        # Check if there's an ongoing response task for this peer
+        if peer_id in self.response_tasks and not self.response_tasks[peer_id].done():
+            logger.info(f"Cancelling previous response for {peer_id}")
+            # Cancel the previous task
+            self.response_tasks[peer_id].cancel()
+            try:
+                # Wait a brief moment for the task to clean up
+                await asyncio.wait_for(self.response_tasks[peer_id], timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            
+            # Send a message to the client that the response was interrupted
+            try:
+                await peer.send_message({
+                    "type": "stream_interrupt",
+                    "message": "I heard you speaking, let me listen again."
+                })
+            except Exception as e:
+                logger.error(f"Error sending interrupt message: {str(e)}")
+        
+        # Create a new task for this response
+        response_task = asyncio.create_task(self._process_response(peer_id, peer, msg_id, message_data, app))
+        self.response_tasks[peer_id] = response_task
+        
+        try:
+            return await response_task
+        except asyncio.CancelledError:
+            logger.info(f"Response processing cancelled for {peer_id}")
+            return None    
             
     async def register_peer(self, peer_id: str, company_info: dict, websocket: WebSocket) -> PeerConnection:
         """Register a new peer connection"""

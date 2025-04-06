@@ -89,12 +89,100 @@ async def handle_audio_stream(peer_id: str, audio_data: bytes, manager: WebRTCMa
         task = asyncio.create_task(silence_detection_loop(peer_id, manager, app))
         app.state.silence_detection_tasks[peer_id] = task
         
-# In silence_detection_loop
+# # In silence_detection_loop
+# async def silence_detection_loop(peer_id: str, manager: WebRTCManager, app: FastAPI):
+#     """Loop to detect silence and trigger processing when user stops speaking"""
+#     logger.info(f"Starting silence detection loop for {peer_id}")
+#     try:
+#         loop_count = 0
+        
+#         while True:
+#             # Check if we should stop the loop
+#             if peer_id not in last_speech_timestamps:
+#                 logger.info(f"Stopping silence detection for {peer_id} - client disconnected")
+#                 break
+                
+#             # Get last speech timestamp
+#             last_speech = last_speech_timestamps.get(peer_id, 0)
+#             current_time = time.time()
+#             silence_duration = current_time - last_speech
+            
+#             # Log status periodically
+#             if loop_count % 50 == 0:
+#                 pass # Log every ~5 seconds (assuming 0.1s sleep)
+#                 # logger.debug(f"Silence duration for {peer_id}: {silence_duration:.2f}s, threshold: {SILENCE_THRESHOLD}s")
+#             loop_count += 1
+            
+#             # If silence threshold exceeded and not already processing
+#             if silence_duration >= SILENCE_THRESHOLD and not is_processing.get(peer_id, False):
+#                 # logger.info(f"Silence threshold exceeded for {peer_id}: {silence_duration:.2f}s")
+                
+#                 # Check transcripts to see if we have anything
+#                 if hasattr(app.state, 'transcripts'):
+#                     if peer_id in app.state.transcripts:
+#                         transcript = app.state.transcripts.get(peer_id)
+#                         logger.info(f"Found transcript for {peer_id}: '{transcript}'")
+#                     else:
+#                         logger.info(f"No transcript found for {peer_id} in app.state.transcripts")
+#                 else:
+#                     logger.info(f"app.state does not have 'transcripts' attribute")
+                
+#                 # Check if we have a transcript to process
+#                 if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
+#                     transcript = app.state.transcripts.get(peer_id)
+                    
+#                     if transcript and transcript.strip():
+#                         logger.info(f"Processing transcript after silence for {peer_id}: '{transcript}'")
+                        
+#                         # Mark as processing to avoid duplicate processing
+#                         is_processing[peer_id] = True
+                        
+#                         # Process the transcript and get response
+#                         message_data = {
+#                             "type": "message",
+#                             "message": transcript,
+#                             "source": "audio"
+#                         }
+                        
+#                         # Clear the transcript to avoid reprocessing
+#                         app.state.transcripts[peer_id] = ""
+                        
+#                         # Process the message and get response with audio
+#                         try:
+#                             # Use the existing function for processing with TTS
+#                             await process_message_with_audio_response(manager, peer_id, message_data, app)
+#                         except Exception as e:
+#                             logger.error(f"Error processing transcript: {str(e)}")
+#                         finally:
+#                             # Reset processing flag
+#                             is_processing[peer_id] = False
+#                     else:
+#                         logger.debug(f"No valid transcript to process for {peer_id}")
+#                 else:
+#                     logger.debug(f"No transcript available for {peer_id}")
+            
+#             # Sleep before next check (100ms)
+#             await asyncio.sleep(0.1)
+            
+#     except asyncio.CancelledError:
+#         logger.info(f"Silence detection task cancelled for {peer_id}")
+#     except Exception as e:
+#         logger.error(f"Error in silence detection loop for {peer_id}: {str(e)}")
+#     finally:
+#         # Clean up
+#         if hasattr(app.state, 'silence_detection_tasks') and peer_id in app.state.silence_detection_tasks:
+#             app.state.silence_detection_tasks.pop(peer_id, None)
+#             logger.info(f"Removed silence detection task for {peer_id}")
+
+# Then modify the silence_detection_loop function to be more robust
 async def silence_detection_loop(peer_id: str, manager: WebRTCManager, app: FastAPI):
     """Loop to detect silence and trigger processing when user stops speaking"""
     logger.info(f"Starting silence detection loop for {peer_id}")
     try:
         loop_count = 0
+        # Track if we're currently processing a response
+        processing_response = False
+        last_transcript = ""
         
         while True:
             # Check if we should stop the loop
@@ -107,58 +195,49 @@ async def silence_detection_loop(peer_id: str, manager: WebRTCManager, app: Fast
             current_time = time.time()
             silence_duration = current_time - last_speech
             
-            # Log status periodically
-            if loop_count % 50 == 0:  # Log every ~5 seconds (assuming 0.1s sleep)
-                logger.debug(f"Silence duration for {peer_id}: {silence_duration:.2f}s, threshold: {SILENCE_THRESHOLD}s")
-            loop_count += 1
+            # Check transcripts to see if we have anything
+            current_transcript = ""
+            if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
+                current_transcript = app.state.transcripts.get(peer_id, "")
+            
+            # If transcript changed while we're processing, we should interrupt and restart
+            if processing_response and current_transcript and current_transcript != last_transcript:
+                logger.info(f"New speech detected while processing for {peer_id}. Transcript: '{current_transcript}'")
+                # We could implement cancellation of the current response here
+                # For now, just update our state
+                processing_response = False
+                last_transcript = current_transcript
+                last_speech = current_time  # Reset the silence timer
+                last_speech_timestamps[peer_id] = current_time
             
             # If silence threshold exceeded and not already processing
-            if silence_duration >= SILENCE_THRESHOLD and not is_processing.get(peer_id, False):
+            if silence_duration >= SILENCE_THRESHOLD and not processing_response and current_transcript.strip():
                 logger.info(f"Silence threshold exceeded for {peer_id}: {silence_duration:.2f}s")
+                logger.info(f"Processing transcript after silence for {peer_id}: '{current_transcript}'")
                 
-                # Check transcripts to see if we have anything
-                if hasattr(app.state, 'transcripts'):
-                    if peer_id in app.state.transcripts:
-                        transcript = app.state.transcripts.get(peer_id)
-                        logger.info(f"Found transcript for {peer_id}: '{transcript}'")
-                    else:
-                        logger.info(f"No transcript found for {peer_id} in app.state.transcripts")
-                else:
-                    logger.info(f"app.state does not have 'transcripts' attribute")
+                # Mark as processing to avoid duplicate processing
+                processing_response = True
+                last_transcript = current_transcript
                 
-                # Check if we have a transcript to process
-                if hasattr(app.state, 'transcripts') and peer_id in app.state.transcripts:
-                    transcript = app.state.transcripts.get(peer_id)
-                    
-                    if transcript and transcript.strip():
-                        logger.info(f"Processing transcript after silence for {peer_id}: '{transcript}'")
-                        
-                        # Mark as processing to avoid duplicate processing
-                        is_processing[peer_id] = True
-                        
-                        # Process the transcript and get response
-                        message_data = {
-                            "type": "message",
-                            "message": transcript,
-                            "source": "audio"
-                        }
-                        
-                        # Clear the transcript to avoid reprocessing
-                        app.state.transcripts[peer_id] = ""
-                        
-                        # Process the message and get response with audio
-                        try:
-                            # Use the existing function for processing with TTS
-                            await process_message_with_audio_response(manager, peer_id, message_data, app)
-                        except Exception as e:
-                            logger.error(f"Error processing transcript: {str(e)}")
-                        finally:
-                            # Reset processing flag
-                            is_processing[peer_id] = False
-                    else:
-                        logger.debug(f"No valid transcript to process for {peer_id}")
-                else:
-                    logger.debug(f"No transcript available for {peer_id}")
+                # Process the transcript and get response
+                message_data = {
+                    "type": "message",
+                    "message": current_transcript,
+                    "source": "audio"
+                }
+                
+                # Clear the transcript to avoid reprocessing
+                app.state.transcripts[peer_id] = ""
+                
+                # Process the message and get response with audio
+                try:
+                    # Use the existing function for processing with TTS
+                    await process_message_with_audio_response(manager, peer_id, message_data, app)
+                except Exception as e:
+                    logger.error(f"Error processing transcript: {str(e)}")
+                finally:
+                    # Reset processing flag
+                    processing_response = False
             
             # Sleep before next check (100ms)
             await asyncio.sleep(0.1)
@@ -195,6 +274,35 @@ async def handle_audio_message(manager, peer_id, message_data, app):
             speech_service = DeepgramWebSocketService()
             
             # Define callback for transcription results - MODIFIED TO PROCESS IMMEDIATELY
+            # async def transcription_callback(session_id, transcribed_text):
+            #     if not transcribed_text:
+            #         logger.debug(f"Empty transcription for {session_id}")
+            #         return
+                    
+            #     logger.info(f"Transcription for {peer_id}: '{transcribed_text}'")
+                
+            #     # Update timestamp for activity tracking
+            #     last_speech_timestamps[peer_id] = time.time()
+                
+            #     # Store the transcript in the app state
+            #     if not hasattr(app.state, 'transcripts'):
+            #         app.state.transcripts = {}
+            #     app.state.transcripts[peer_id] = transcribed_text
+            #     logger.info(f"Stored transcript for {peer_id}: '{transcribed_text}'")
+                
+            #     # IMPORTANT: Process the transcript immediately when received
+            #     # This ensures we don't need to wait for silence detection
+            #     message_data = {
+            #         "type": "message",
+            #         "message": transcribed_text,
+            #         "source": "audio"
+            #     }
+                
+            #     # Process in a separate task to avoid blocking
+            #     asyncio.create_task(process_message_with_audio_response(
+            #         manager, peer_id, message_data, app
+            #     ))
+            
             async def transcription_callback(session_id, transcribed_text):
                 if not transcribed_text:
                     logger.debug(f"Empty transcription for {session_id}")
@@ -211,18 +319,7 @@ async def handle_audio_message(manager, peer_id, message_data, app):
                 app.state.transcripts[peer_id] = transcribed_text
                 logger.info(f"Stored transcript for {peer_id}: '{transcribed_text}'")
                 
-                # IMPORTANT: Process the transcript immediately when received
-                # This ensures we don't need to wait for silence detection
-                message_data = {
-                    "type": "message",
-                    "message": transcribed_text,
-                    "source": "audio"
-                }
-                
-                # Process in a separate task to avoid blocking
-                asyncio.create_task(process_message_with_audio_response(
-                    manager, peer_id, message_data, app
-                ))
+            
             
             # Initialize Deepgram session with error handling
             try:

@@ -94,15 +94,60 @@ class DeepgramWebSocketService:
         logger.error(f"Could not reconnect to Deepgram for session {session_id}")
 
     
+    # async def _handle_message(self, session_id: str, message: str):
+    #     try:
+    #         data = json.loads(message)
+    #         message_type = data.get("type")
+    #         logger.info(f"Deepgram message received: {message_type}")
+            
+    #         if random.random() < 0.1:  # Log ~10% of messages
+    #             logger.info(f"Deepgram full message: {message[:500]}...")
+            
+
+    #         if message_type == "Results":
+    #             channel = data.get("channel", {})
+    #             alternatives = channel.get("alternatives", [])
+                
+    #             if alternatives:
+    #                 transcript = alternatives[0].get("transcript", "").strip()
+    #                 is_final = data.get("is_final", False)
+    #                 speech_final = data.get("speech_final", False)
+                    
+    #                 logger.info(f"Deepgram transcript: '{transcript}', is_final={is_final}, speech_final={speech_final}")
+                    
+    #                 if transcript and (is_final or speech_final):
+    #                     logger.info(f"Final transcript ({session_id}): '{transcript}'")
+    #                     await self.sessions[session_id]["callback"](session_id, transcript)
+    #                 elif transcript:
+    #                     logger.debug(f"Interim transcript ({session_id}): '{transcript}'")
+    #             else:
+    #                 logger.debug(f"No transcript alternatives received for {session_id}")
+
+    #         elif message_type == "UtteranceEnd":
+    #             logger.info(f"Utterance end detected for {session_id}")
+    #             # Notify that an utterance has ended - this helps with silence detection
+    #             await self.sessions[session_id]["callback"](session_id, "")
+
+    #         elif message_type == "Error":
+    #             error_message = data.get('message', 'Unknown error')
+    #             logger.error(f"Deepgram Error for {session_id}: {error_message}")
+
+    #         elif message_type == "Metadata":
+    #             logger.info(f"Deepgram Metadata received for {session_id}: {json.dumps(data)}")
+
+    #         else:
+    #             logger.debug(f"Unhandled message type '{message_type}' for session {session_id}")
+    #     except Exception as e:
+    #         logger.error(f"Error handling Deepgram message: {str(e)}")
+    #         logger.error(f"Raw message content: {message[:100]}...")
+    
+    # Modify _handle_message in DeepgramWebSocketService class
+
     async def _handle_message(self, session_id: str, message: str):
         try:
             data = json.loads(message)
             message_type = data.get("type")
             logger.info(f"Deepgram message received: {message_type}")
-            
-            if random.random() < 0.1:  # Log ~10% of messages
-                logger.info(f"Deepgram full message: {message[:500]}...")
-            
 
             if message_type == "Results":
                 channel = data.get("channel", {})
@@ -115,10 +160,21 @@ class DeepgramWebSocketService:
                     
                     logger.info(f"Deepgram transcript: '{transcript}', is_final={is_final}, speech_final={speech_final}")
                     
-                    if transcript and (is_final or speech_final):
-                        logger.info(f"Final transcript ({session_id}): '{transcript}'")
-                        await self.sessions[session_id]["callback"](session_id, transcript)
-                    elif transcript:
+                    # Only send final transcripts to the callback
+                    # speech_final means the entire speech segment is complete
+                    # is_final just means this chunk is complete but the person might still be speaking
+                    if transcript and is_final:
+                        if speech_final:
+                            logger.info(f"Final transcript ({session_id}): '{transcript}'")
+                            # This is truly the final transcript, user has finished speaking
+                            await self.sessions[session_id]["callback"](session_id, transcript)
+                        else:
+                            # This is a segment that's final, but the user might still be speaking
+                            # We should update our transcripts but not necessarily process yet
+                            logger.info(f"Segment final transcript ({session_id}): '{transcript}'")
+                            # Store in app state but don't trigger processing yet
+                            await self.sessions[session_id]["callback"](session_id, transcript)
+                    else:
                         logger.debug(f"Interim transcript ({session_id}): '{transcript}'")
                 else:
                     logger.debug(f"No transcript alternatives received for {session_id}")
@@ -140,8 +196,7 @@ class DeepgramWebSocketService:
         except Exception as e:
             logger.error(f"Error handling Deepgram message: {str(e)}")
             logger.error(f"Raw message content: {message[:100]}...")
-    
-          
+                
     
     async def process_audio_chunk(self, session_id: str, audio_data: bytes) -> bool:
         try:
