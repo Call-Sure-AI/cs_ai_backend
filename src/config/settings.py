@@ -239,7 +239,15 @@ class Settings(BaseSettings):
     SECRET_KEY: str = env_values.get("SECRET_KEY", "change-this-in-production")
     
     # CORS Settings
-    ALLOWED_ORIGINS: List[str] = env_values.get("ALLOWED_ORIGINS", ["*"])
+    # ALLOWED_ORIGINS: List[str] = env_values.get("ALLOWED_ORIGINS", ["*"])
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        """Process ALLOWED_ORIGINS separately to avoid JSON parsing issues"""
+        origins = os.getenv("ALLOWED_ORIGINS", "*")
+        if origins:
+            return origins.split(",")
+        return ["*"]
+    
     
     # OpenAI
     OPENAI_API_KEY: str = env_values.get("OPENAI_API_KEY", "")
