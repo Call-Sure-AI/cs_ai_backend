@@ -20,7 +20,7 @@ from routes.twilio_handlers import router as twilio_router
 # from routes.calendar_routes_handlers import calendar_router
 # from routes.google_sheets_routes import router as google_sheets_router  
 # from routes.websocket_handlers import router as websocket_router
-
+logger.info("allow_origins: %s", ALLOWED_ORIGINS)
 app = FastAPI(
     title="AI Backend",
     version="1.0.0",
@@ -35,6 +35,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Root route redirects to docs
