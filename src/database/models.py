@@ -169,6 +169,9 @@ class Agent(Base):
     type = Column(Enum(AgentType), nullable=False)
     company_id = Column(String, ForeignKey('Company.id'))
     
+    files = Column(ARRAY(String), default=[])
+
+    
     # Core Configuration
     prompt = Column(Text, nullable=False)
     template_id = Column(String(255), nullable=True)
