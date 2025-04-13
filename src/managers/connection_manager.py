@@ -169,36 +169,51 @@ class ConnectionManager:
     async def initialize_agent_resources(self, client_id: str, company_id: str, agent_info: dict):
         """Initialize agent resources with proper embedding handling"""
         try:
-            # websocket = self.active_connections.get(client_id)
-            # if not websocket or self.websocket_is_closed(websocket):
-            #     logger.warning(f"Client {client_id} disconnected during initialization")
-            #     return False
+            # Get the agent from the database
+            agent_id = agent_info.get('id')
+            if not agent_id:
+                logger.error(f"No agent_id provided for {client_id}")
+                return False
+                
+            # Fetch the agent record to get additional_context
+            agent_record = self.db.query(Agent).filter_by(id=agent_id).first()
+            if not agent_record:
+                logger.error(f"Agent {agent_id} not found")
+                return False
+                
+            # Extract businessContext and roleDescription from additional_context
+            additional_context = agent_record.additional_context or {}
+            business_context = additional_context.get('businessContext', '')
+            role_description = additional_context.get('roleDescription', '')
+            
+            # Create prompt based on additional_context
+            prompt = agent_record.prompt
+            if business_context and role_description:
+                # Use businessContext and roleDescription for the prompt
+                prompt = f"{business_context} {role_description}"
+            elif business_context:
+                prompt = business_context
+            elif role_description:
+                prompt = role_description
+                
+            # Update agent_info with the new prompt
+            agent_info = {
+                "id": agent_id,
+                "name": agent_record.name,
+                "type": agent_record.type,
+                "prompt": prompt,  # Use the updated prompt
+                "confidence_threshold": agent_record.confidence_threshold,
+                "additional_context": agent_record.additional_context
+            }
             
             # Create RAG service instance
             rag_service = RAGService(self.vector_store)
             
-            # # First verify that embeddings exist and are accessible
-            # embeddings_exist = await rag_service.verify_embeddings(
-            #     company_id=company_id,
-            #     agent_id=agent_info['id']
-            # )
-            
-            # if not embeddings_exist:
-            #     # If embeddings don't exist, load and add documents
-            #     documents = await self.load_agent_documents(company_id, agent_info['id'])
-            #     if documents:
-            #         success = await rag_service.add_documents(
-            #             company_id=company_id,
-            #             documents=documents,
-            #             agent_id=agent_info['id']
-            #         )
-            #         if not success:
-            #             raise ValueError("Failed to add documents to vector store")
-            
-            # # Create chain with existing embeddings
+            # Create chain with existing embeddings and the updated prompt
             chain = await rag_service.create_qa_chain(
                 company_id=company_id,
-                agent_id=agent_info['id']
+                agent_id=agent_info['id'],
+                agent_prompt=prompt  # Pass the prompt to the RAG service
             )
             
             self.agent_resources[client_id] = {
@@ -207,13 +222,13 @@ class ConnectionManager:
                 "agent_info": agent_info
             }
             
-            
             logger.info(f"Successfully initialized agent resources for {agent_info['id']} and agent resource {self.agent_resources[client_id]}")
             return True
 
         except Exception as e:
             logger.error(f"Error initializing agent resources: {str(e)}")
             return False
+        
         
     async def load_agent_documents(self, company_id: str, agent_id: str) -> List[Dict]:
         """Load agent's documents from database"""

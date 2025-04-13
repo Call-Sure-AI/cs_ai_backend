@@ -998,21 +998,16 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
 from managers.agent_manager import AgentManager
 
 async def initialize_client_resources(websocket: WebSocket, peer_id: str, company_id: str, agent_id: str, db: Session):
-    """Ensure agent resources are initialized for the client"""
+    """Initialize agent resources for the client"""
     try:
         # Get the connection manager from the app state
         connection_manager = websocket.app.state.connection_manager
         
-        # Get base agent if no specific agent is provided
         if not agent_id:
-            agent_manager = AgentManager(db, QdrantService())
-            base_agent = await agent_manager.get_base_agent(company_id)
-            if not base_agent:
-                logger.error(f"No base agent found for company {company_id}")
-                return False
-            agent_id = base_agent['id']
+            logger.error(f"No agent_id provided for {peer_id}")
+            return False
         
-        # Prepare agent info
+        # Prepare agent info - Just pass the ID, don't fetch base agent
         agent_info = {
             'id': agent_id,
             'company_id': company_id

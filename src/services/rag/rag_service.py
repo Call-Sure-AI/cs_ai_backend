@@ -51,7 +51,54 @@ class RAGService:
         # Caching mechanism for chains
         self.chain_cache = {}
     
-    async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None) -> RetrievalQA:
+    # async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None) -> RetrievalQA:
+    #     """Create a QA chain using the vector store for a company/agent"""
+    #     try:
+    #         # Check if chain already exists in cache
+    #         cache_key = f"{company_id}_{agent_id or 'all'}"
+    #         if cache_key in self.chain_cache:
+    #             return self.chain_cache[cache_key]
+            
+    #         # Get vector store
+    #         vector_store = await self.qdrant_service.get_vector_store(company_id)
+            
+    #         # Create retriever, optionally with agent filter
+    #         search_kwargs = {"k": 5, "score_threshold": 0.2}
+    #         if agent_id:
+    #             from qdrant_client import models
+    #             search_filter = models.Filter(
+    #                 must=[models.FieldCondition(
+    #                     key="metadata.agent_id",
+    #                     match=models.MatchValue(value=str(agent_id))
+    #                 )]
+    #             )
+    #             search_kwargs["filter"] = search_filter
+            
+    #         retriever = vector_store.as_retriever(
+    #             search_type="similarity",
+    #             search_kwargs=search_kwargs
+    #         )
+            
+    #         # Build the RetrievalQA chain
+    #         chain = RetrievalQA.from_chain_type(
+    #             llm=self.llm,
+    #             chain_type="stuff",
+    #             retriever=retriever,
+    #             return_source_documents=True,
+    #             chain_type_kwargs={"prompt": self.qa_prompt, "document_variable_name": "context"}
+    #         )
+            
+    #         # Cache the chain
+    #         self.chain_cache[cache_key] = chain
+            
+    #         logger.info(f"Created QA chain for company {company_id}, agent {agent_id}")
+    #         return chain
+            
+    #     except Exception as e:
+    #         logger.error(f"Error creating QA chain: {str(e)}")
+    #         raise
+    
+    async def create_qa_chain(self, company_id: str, agent_id: Optional[str] = None, agent_prompt: Optional[str] = None) -> RetrievalQA:
         """Create a QA chain using the vector store for a company/agent"""
         try:
             # Check if chain already exists in cache
@@ -79,13 +126,26 @@ class RAGService:
                 search_kwargs=search_kwargs
             )
             
+            # Use the agent_prompt if provided, otherwise use the default template
+            qa_template = self.qa_template
+            if agent_prompt:
+                # Add necessary placeholders to the agent's prompt
+                if "{context}" not in agent_prompt:
+                    agent_prompt = f"{agent_prompt}\n\nContext: {{context}}\n\nQuestion: {{question}}\n\nAnswer: "
+                qa_template = agent_prompt
+            
+            qa_prompt = PromptTemplate(
+                template=qa_template,
+                input_variables=["context", "question"]
+            )
+            
             # Build the RetrievalQA chain
             chain = RetrievalQA.from_chain_type(
                 llm=self.llm,
                 chain_type="stuff",
                 retriever=retriever,
                 return_source_documents=True,
-                chain_type_kwargs={"prompt": self.qa_prompt, "document_variable_name": "context"}
+                chain_type_kwargs={"prompt": qa_prompt, "document_variable_name": "context"}
             )
             
             # Cache the chain
@@ -97,6 +157,7 @@ class RAGService:
         except Exception as e:
             logger.error(f"Error creating QA chain: {str(e)}")
             raise
+    
     
     # async def get_answer_with_chain(
     #     self,
