@@ -428,6 +428,143 @@ async def handle_audio_message(manager, peer_id, message_data, app):
         logger.warning(f"Unknown audio action: {action}")
         return {"status": "error", "error": f"Unknown action: {action}"}
 
+# async def process_message_with_audio_response(manager, peer_id: str, message_data: dict, app):
+#     """Process a message and respond with streaming text and audio"""
+#     if peer_id not in manager.peers:
+#         logger.warning(f"Client {peer_id} not found")
+#         return
+            
+#     peer = manager.peers[peer_id]
+#     msg_id = str(time.time())  # Unique message ID
+    
+#     try:
+#         # Ensure agent resources are initialized
+#         if not manager.connection_manager:
+#             logger.error("Connection manager not initialized")
+#             return
+                
+#         company_id = peer.company_id
+        
+#         # Get or initialize agent resources
+#         if peer_id not in manager.connection_manager.agent_resources:
+#             base_agent = await manager.agent_manager.get_base_agent(company_id)
+#             if not base_agent:
+#                 logger.error(f"No base agent found for company {company_id}")
+#                 return
+            
+#             agent_info = {'id': base_agent['id']}
+#             success = await manager.connection_manager.initialize_agent_resources(
+#                 peer_id, company_id, agent_info
+#             )
+            
+#             if not success:
+#                 logger.error(f"Failed to initialize agent resources for {peer_id}")
+#                 return
+        
+#         # Get agent resources
+#         agent_res = manager.connection_manager.agent_resources.get(peer_id)
+#         if not agent_res:
+#             logger.error(f"No agent resources found for {peer_id}")
+#             return
+                
+#         chain = agent_res.get('chain')
+#         rag_service = agent_res.get('rag_service')
+        
+#         if not chain or not rag_service:
+#             logger.error(f"Missing chain or rag service for {peer_id}")
+#             return
+        
+#         # Initialize TTS service
+#         tts_service = WebSocketTTSService()
+        
+#         # Define callback for sending audio back to the client
+#         async def send_audio_to_client(audio_base64):
+#             try:
+#                 await peer.send_message({
+#                     "type": "stream_chunk",
+#                     "text_content": "",
+#                     "audio_content": audio_base64,
+#                     "msg_id": msg_id
+#                 })
+#                 return True
+#             except Exception as e:
+#                 logger.error(f"Error sending audio chunk: {str(e)}")
+#                 return False
+        
+#         # Start TTS connection
+#         connect_success = await tts_service.connect(send_audio_to_client)
+#         if not connect_success:
+#             logger.error("Failed to connect to TTS service")
+#             return
+        
+#         # Track incoming text and for optimizing audio generation
+#         accumulated_text = ""
+#         token_buffer = ""  # To optimize WebSocket traffic
+        
+#         # Get conversation context
+#         conversation_context = {}
+#         conversation = manager.connection_manager.client_conversations.get(peer_id)
+#         if conversation:
+#             conversation_context = await manager.agent_manager.get_conversation_context(conversation['id'])
+        
+#         # Stream response tokens and generate audio immediately
+#         async for token in rag_service.get_answer_with_chain(
+#             chain=chain,
+#             question=message_data.get('message', ''),
+#             conversation_context=conversation_context
+#         ):
+#             # Accumulate text for logging
+#             accumulated_text += token
+#             token_buffer += token
+            
+#             # Send text chunk to client
+#             await peer.send_message({
+#                 "type": "stream_chunk",
+#                 "text_content": token,
+#                 "audio_content": None,
+#                 "msg_id": msg_id
+#             })
+            
+#             # Send token to TTS service - use small batches to reduce WebSocket traffic
+#             # but still maintain near real-time speech generation
+#             if len(token_buffer) >= 3 or any(p in token for p in ".!?,"):
+#                 await tts_service.stream_text(token_buffer)
+#                 token_buffer = ""
+            
+#             # Small delay to prevent overwhelming the WebSocket
+#             await asyncio.sleep(0.01)  # Prevent CPU overload
+            
+#         # Process any remaining buffered tokens
+#         if token_buffer:
+#             await tts_service.stream_text(token_buffer)
+            
+#         # Flush any remaining text in ElevenLabs buffer
+#         await tts_service.flush()
+        
+#         # Wait for audio processing to complete
+#         await asyncio.sleep(0.8)
+        
+#         # Close TTS service properly
+#         await tts_service.stream_end()
+#         await asyncio.sleep(0.2)  # Give time for processing the end signal
+#         await tts_service.close()
+        
+#         # Send end of stream message
+#         await peer.send_message({
+#             "type": "stream_end",
+#             "msg_id": msg_id
+#         })
+        
+#         logger.info(f"Completed response for {peer_id}: {accumulated_text}")
+#         return accumulated_text
+            
+#     except Exception as e:
+#         logger.error(f"Error processing message with audio: {str(e)}")
+#         if 'tts_service' in locals() and tts_service is not None:
+#             await tts_service.close()
+#         return None
+
+
 async def process_message_with_audio_response(manager, peer_id: str, message_data: dict, app):
     """Process a message and respond with streaming text and audio"""
     if peer_id not in manager.peers:
@@ -444,22 +581,6 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
             return
                 
         company_id = peer.company_id
-        
-        # Get or initialize agent resources
-        if peer_id not in manager.connection_manager.agent_resources:
-            base_agent = await manager.agent_manager.get_base_agent(company_id)
-            if not base_agent:
-                logger.error(f"No base agent found for company {company_id}")
-                return
-            
-            agent_info = {'id': base_agent['id']}
-            success = await manager.connection_manager.initialize_agent_resources(
-                peer_id, company_id, agent_info
-            )
-            
-            if not success:
-                logger.error(f"Failed to initialize agent resources for {peer_id}")
-                return
         
         # Get agent resources
         agent_res = manager.connection_manager.agent_resources.get(peer_id)
@@ -497,9 +618,9 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
             logger.error("Failed to connect to TTS service")
             return
         
-        # Track incoming text and for optimizing audio generation
-        accumulated_text = ""
-        token_buffer = ""  # To optimize WebSocket traffic
+        # For accumulating text
+        current_sentence = ""
+        full_response = ""
         
         # Get conversation context
         conversation_context = {}
@@ -507,17 +628,20 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
         if conversation:
             conversation_context = await manager.agent_manager.get_conversation_context(conversation['id'])
         
-        # Stream response tokens and generate audio immediately
+        # Stream response tokens
         async for token in rag_service.get_answer_with_chain(
             chain=chain,
             question=message_data.get('message', ''),
             conversation_context=conversation_context
         ):
-            # Accumulate text for logging
-            accumulated_text += token
-            token_buffer += token
+            # Log received token
+            logger.info(f"Received token: '{token}'")
             
-            # Send text chunk to client
+            # Add token to buffers
+            full_response += token
+            current_sentence += token
+            
+            # Send text token to client immediately
             await peer.send_message({
                 "type": "stream_chunk",
                 "text_content": token,
@@ -525,28 +649,37 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
                 "msg_id": msg_id
             })
             
-            # Send token to TTS service - use small batches to reduce WebSocket traffic
-            # but still maintain near real-time speech generation
-            if len(token_buffer) >= 3 or any(p in token for p in ".!?,"):
-                await tts_service.stream_text(token_buffer)
-                token_buffer = ""
+            # Check for sentence end or significant pause
+            if ('.' in token or '!' in token or '?' in token):
+                
+                # Only send if we have accumulated something meaningful
+                if current_sentence.strip():
+                    logger.info(f"Sending for TTS: '{current_sentence}'")
+                    await tts_service.stream_text(current_sentence)
+                    
+                    # Reset only on sentence end, not on commas
+                    if '.' in token or '!' in token or '?' in token:
+                        current_sentence = ""
+                    
+                    # Give time for processing
+                    await asyncio.sleep(0.3)
             
-            # Small delay to prevent overwhelming the WebSocket
-            await asyncio.sleep(0.01)  # Prevent CPU overload
-            
-        # Process any remaining buffered tokens
-        if token_buffer:
-            await tts_service.stream_text(token_buffer)
-            
-        # Flush any remaining text in ElevenLabs buffer
-        await tts_service.flush()
+            # Small delay
+            await asyncio.sleep(0.01)
         
-        # Wait for audio processing to complete
-        await asyncio.sleep(0.8)
+        # Process any remaining text
+        if current_sentence.strip():
+            logger.info(f"Sending final text for TTS: '{current_sentence}'")
+            await tts_service.stream_text(current_sentence)
+            await asyncio.sleep(0.3)
+        
+        # Ensure all audio is processed
+        await tts_service.flush()
+        await asyncio.sleep(1.5)
         
         # Close TTS service properly
         await tts_service.stream_end()
-        await asyncio.sleep(0.2)  # Give time for processing the end signal
+        await asyncio.sleep(0.5)
         await tts_service.close()
         
         # Send end of stream message
@@ -555,17 +688,14 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
             "msg_id": msg_id
         })
         
-        logger.info(f"Completed response for {peer_id}: {accumulated_text}")
-        return accumulated_text
-            
+        logger.info(f"Completed response for {peer_id}")
+        return full_response
+    
     except Exception as e:
         logger.error(f"Error processing message with audio: {str(e)}")
         if 'tts_service' in locals() and tts_service is not None:
             await tts_service.close()
         return None
-
-
-
 
 
 async def process_buffered_message(manager, client_id, msg_data, app):
@@ -799,13 +929,30 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
             await websocket.close(code=1011)
             websocket_closed = True
             return
-            
+
+        # Extract businessContext and roleDescription from additional_context if available
+        additional_context = agent_record.additional_context or {}
+        business_context = additional_context.get('businessContext', '')
+        role_description = additional_context.get('roleDescription', '')
+
+        # Create a prompt based on additional_context
+        prompt = agent_record.prompt
+        if business_context and role_description:
+            # Combine the business context and role description into the prompt
+            prompt = f"{business_context} {role_description}"
+        elif business_context:
+            prompt = business_context
+        elif role_description:
+            prompt = role_description
+
+        # Use new prompt in the agent info
         agent = {
             "id": agent_record.id,
             "name": agent_record.name,
             "type": agent_record.type,
-            "prompt": agent_record.prompt,
-            "confidence_threshold": agent_record.confidence_threshold
+            "prompt": prompt,  # Use the updated prompt
+            "confidence_threshold": agent_record.confidence_threshold,
+            "additional_context": agent_record.additional_context  # Include this for completeness
         }
         
         # Initialize agent resources
