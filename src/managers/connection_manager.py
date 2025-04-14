@@ -227,6 +227,7 @@ class ConnectionManager:
 
         except Exception as e:
             logger.error(f"Error initializing agent resources: {str(e)}")
+            self.db.rollback()
             return False
         
         
