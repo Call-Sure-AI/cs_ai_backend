@@ -67,6 +67,10 @@ async def validate_exotel_request(request: Request) -> bool:
         # Implementation depends on Exotel's authentication mechanism
         # This is a simplified version - implement properly according to Exotel docs
         # If Exotel uses a signature system similar to Twilio:
+        logger.info(f"ENV check - EXOTEL_SID: {'Set' if EXOTEL_SID else 'Not set'}")
+        logger.info(f"ENV check - EXOTEL_TOKEN: {'Set' if EXOTEL_TOKEN else 'Not set'}")
+        logger.info(f"ENV check - EXOTEL_API_KEY: {'Set' if EXOTEL_API_KEY else 'Not set'}")
+
         signature = request.headers.get("X-Exotel-Signature", "")
         if not signature and EXOTEL_API_KEY:
             logger.warning(f"Invalid Exotel signature: {signature}")
