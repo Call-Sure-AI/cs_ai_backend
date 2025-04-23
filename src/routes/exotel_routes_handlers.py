@@ -98,7 +98,7 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to initialize Exotel integration: {str(e)}")
 
-@router.post("/incoming-call")
+@router.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
     """Handles incoming Exotel voice calls by generating AppML response"""
     logger.info(f"[EXOTEL_CALL_SETUP] Received incoming call")
@@ -178,7 +178,7 @@ async def handle_incoming_call(request: Request):
             media_type="application/xml",
         )
 
-@router.post("/call-status")
+@router.api_route("/call-status", methods=["GET", "POST"])
 async def handle_call_status(request: Request):
     """Handle Exotel call status callbacks for resource cleanup"""
     # Validate the request is coming from Exotel
