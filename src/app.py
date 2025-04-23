@@ -8,6 +8,7 @@ from database.config import get_db
 from services.vector_store.qdrant_service import QdrantService
 from services.webrtc.manager import WebRTCManager
 
+
 logger = logging.getLogger(__name__)
 
 from config.settings import ALLOWED_ORIGINS, DEBUG, APP_PREFIX
@@ -15,6 +16,7 @@ from routes.healthcheck_handlers import healthcheck_router
 from routes.webrtc_handlers import router as webrtc_router
 from routes.admin_routes_handlers import router as admin_router
 from routes.twilio_handlers import router as twilio_router
+from routes.exotel_routes_handlers import router as exotel_router
 # from routes.ai_routes_handlers import ai_router
 # from routes.voice_routes_handlers import voice_router
 # from routes.calendar_routes_handlers import calendar_router
@@ -48,6 +50,7 @@ app.include_router(healthcheck_router, prefix=f"{APP_PREFIX}/health", tags=["Hea
 app.include_router(webrtc_router, prefix=f"{APP_PREFIX}/webrtc", tags=["WebRTC"])
 app.include_router(admin_router, prefix=f"{APP_PREFIX}/admin", tags=["Admin"])
 app.include_router(twilio_router, prefix=f"{APP_PREFIX}/twilio", tags=["Twilio"])
+app.include_router(exotel_router, prefix=f"{APP_PREFIX}/exotel", tags=["Exotel"])
 # app.include_router(ai_router, prefix=f"{APP_PREFIX}/ai", tags=["AI"])
 # app.include_router(voice_router, prefix=f"{APP_PREFIX}/voice", tags=["Voice"])
 # app.include_router(calendar_router, prefix=f"{APP_PREFIX}/calendar", tags=["Calendar"])
