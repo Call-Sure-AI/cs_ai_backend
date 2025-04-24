@@ -37,6 +37,7 @@ from services.speech.deepgram_ws_service import DeepgramWebSocketService
 from services.speech.tts_service import WebSocketTTSService
 from config.settings import settings
 from database.config import get_db
+from database.models import Company, Agent
 
 
 # Initialize router and logging
@@ -267,7 +268,7 @@ async def exotel_audio_stream(
         
         # Get company and prepare info
         db = next(get_db())
-        company = db.query(app.state.models.Company).filter_by(api_key=company_api_key).first()
+        company = db.query(Company).filter_by(api_key=company_api_key).first()
         
         if not company:
             logger.error(f"[{connection_id}] Company not found for API key: {company_api_key}")
@@ -287,7 +288,7 @@ async def exotel_audio_stream(
         logger.info(f"[{connection_id}] Client {peer_id} connected")
         
         # Get agent and set up AI resources
-        agent_record = db.query(app.state.models.Agent).filter_by(id=agent_id).first()
+        agent_record = db.query(Agent).filter_by(id=agent_id).first()
         if not agent_record:
             logger.error(f"[{connection_id}] Agent not found with ID: {agent_id}")
             await websocket.close(code=1011)
