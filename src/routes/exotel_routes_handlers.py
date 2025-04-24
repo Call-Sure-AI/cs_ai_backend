@@ -171,16 +171,23 @@ async def handle_incoming_call(request: Request):
         # Create AppML response for Exotel (similar to TwiML but for Exotel)
         # Note: The exact format depends on Exotel's documentation
         # This is an example based on common XML formats
+        # appml_response = f"""
+        # <Response>
+        #     <Connect>
+        #         <Stream url="{stream_url}" />
+        #     </Connect>
+        #     <Set>
+        #         <statusCallback url="{status_callback_url}" method="POST" events="completed,ringing,in-progress,answered,busy,failed,no-answer,canceled" />
+        #     </Set>
+        # </Response>
+        # """
         appml_response = f"""
         <Response>
-            <Connect>
-                <Stream url="{stream_url}" />
-            </Connect>
-            <Set>
-                <statusCallback url="{status_callback_url}" method="POST" events="completed,ringing,in-progress,answered,busy,failed,no-answer,canceled" />
-            </Set>
+            <Say>Hello, this is a test call.</Say>
+            <Passthru url="https://stage.callsure.ai/api/v1/exotel/passthru-callback" />
         </Response>
         """
+        
         
         # Log and return the AppML
         logger.info(f"[EXOTEL_CALL_SETUP] AppML Response: {appml_response}")
@@ -196,6 +203,15 @@ async def handle_incoming_call(request: Request):
             content="<Response><Say>An error occurred. Please try again later.</Say></Response>",
             media_type="application/xml",
         )
+
+@router.api_route("/passthru-callback", methods=["GET"])
+async def handle_passthru(request: Request):
+    """Handle Exotel passthru callbacks"""
+    logger.info(f"Received passthru callback with params: {dict(request.query_params)}")
+    
+    # Return a simple success response
+    return Response(content="200 OK", status_code=200)
+
 
 @router.api_route("/call-status", methods=["GET", "POST"])
 async def handle_call_status(request: Request):
