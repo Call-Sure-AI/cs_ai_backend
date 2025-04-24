@@ -59,7 +59,7 @@ EXOTEL_API_KEY = os.getenv("EXOTEL_API_KEY")
 DEFAULT_COMPANY_API_KEY = getattr(settings, "DEFAULT_COMPANY_API_KEY", 
                                 "8a638fd6a20a9edbe5228bf6c364e44aa10b01f17d7a62b4826ce6cd1593242e")
 DEFAULT_AGENT_ID = getattr(settings, "DEFAULT_AGENT_ID", 
-                          "48111553-4b98-4f4e-9431-f6ab6cbcfacf")
+                          "c995ab37-ce9b-481f-9c70-30671032f81a")
 
 # # Helper function to validate incoming Exotel requests - similar to Twilio validation
 # async def validate_exotel_request(request: Request) -> bool:
