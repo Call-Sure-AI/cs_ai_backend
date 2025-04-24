@@ -36,6 +36,8 @@ from managers.connection_manager import ConnectionManager
 from services.speech.deepgram_ws_service import DeepgramWebSocketService
 from services.speech.tts_service import WebSocketTTSService
 from config.settings import settings
+from database.config import get_db
+
 
 # Initialize router and logging
 router = APIRouter()
@@ -264,7 +266,7 @@ async def exotel_audio_stream(
             return
         
         # Get company and prepare info
-        db = next(app.state.db_dependency())
+        db = next(get_db())
         company = db.query(app.state.models.Company).filter_by(api_key=company_api_key).first()
         
         if not company:
