@@ -164,7 +164,8 @@ async def handle_incoming_call(request: Request):
         status_callback_url = f"https://{host}/api/v1/exotel/call-status"
 
         # WebRTC Stream URL (this would be your WebSocket endpoint for streaming audio)
-        stream_url = f"wss://{host}/api/v1/exotel/stream/{peer_id}/{company_api_key}/{agent_id}"
+        # stream_url = f"wss://{host}/api/v1/exotel/stream/{peer_id}/{company_api_key}/{agent_id}"
+        stream_url = f"wss://{host}/api/v1/exotel/test-stream/{peer_id}"
         logger.info(f"[EXOTEL_CALL_SETUP] WebSocket Stream URL: {stream_url}")
 
         # Create AppML response for Exotel (similar to TwiML but for Exotel)
@@ -228,6 +229,83 @@ async def handle_call_status(request: Request):
     except Exception as e:
         logger.error(f"Error handling call status: {str(e)}")
         return Response(status_code=500)
+
+
+
+@router.websocket("/test-stream/{peer_id}")
+async def exotel_test_stream(websocket: WebSocket, peer_id: str):
+    connection_id = f"test-{peer_id}"
+    await websocket.accept()
+    logger.info(f"[{connection_id}] Exotel test stream connected")
+
+    last_activity = time.time()
+
+    try:
+        # Send mock 'start' event so Exotel expects media
+        await websocket.send_text(json.dumps({
+            "event": "start",
+            "streamSid": peer_id,
+            "callSid": peer_id,
+            "start": {
+                "accountSid": "dummy_account",
+                "streamSid": peer_id,
+                "callSid": peer_id,
+                "mediaFormat": {
+                    "encoding": "audio/pcm",
+                    "sampleRate": 8000
+                }
+            }
+        }))
+        logger.info(f"[{connection_id}] Sent mock start event")
+
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=2.0)
+
+                if message.get("type") == "websocket.disconnect":
+                    logger.info(f"[{connection_id}] Disconnected")
+                    break
+
+                if "text" in message:
+                    data = json.loads(message["text"])
+                    event = data.get("event")
+
+                    if event == "start":
+                        logger.info(f"[{connection_id}] Received Exotel start event")
+                    elif event == "media":
+                        payload = data.get("media", {}).get("payload")
+                        if payload:
+                            logger.info(f"[{connection_id}] Received media payload")
+                            # Echo it back
+                            await websocket.send_text(json.dumps({
+                                "event": "media",
+                                "streamSid": peer_id,
+                                "media": {
+                                    "payload": payload
+                                }
+                            }))
+                    elif event == "stop":
+                        logger.info(f"[{connection_id}] Call stop event received")
+                        break
+                    else:
+                        logger.info(f"[{connection_id}] Received event: {event}")
+
+                elif "bytes" in message:
+                    logger.info(f"[{connection_id}] Unexpected binary message")
+                    
+            except asyncio.TimeoutError:
+                # Keepalive
+                if time.time() - last_activity > 3:
+                    await websocket.send_text(json.dumps({"event": "ping"}))
+                    logger.debug(f"[{connection_id}] Sent ping")
+                    last_activity = time.time()
+
+    except Exception as e:
+        logger.error(f"[{connection_id}] Error: {e}")
+    finally:
+        logger.info(f"[{connection_id}] Test stream ended")
+        await websocket.close()
+
 
 @router.websocket("/stream/{peer_id}/{company_api_key}/{agent_id}")
 async def exotel_audio_stream(
