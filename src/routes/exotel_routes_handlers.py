@@ -161,11 +161,11 @@ async def handle_incoming_call(request: Request):
 
         # Construct WebSocket signaling URL
         host = request.headers.get("host") or request.url.netloc
-        status_callback_url = f"https://{host}/api/v1/exotel/call-status"
+        status_callback_url = f"https://stage.callsure.ai/api/v1/exotel/call-status"
 
         # WebRTC Stream URL (this would be your WebSocket endpoint for streaming audio)
         # stream_url = f"wss://{host}/api/v1/exotel/stream/{peer_id}/{company_api_key}/{agent_id}"
-        stream_url = f"wss://{host}/api/v1/exotel/test-stream/{peer_id}"
+        stream_url = f"wss://stage.callsure.ai/api/v1/exotel/test-stream/{peer_id}"
         logger.info(f"[EXOTEL_CALL_SETUP] WebSocket Stream URL: {stream_url}")
 
         # Create AppML response for Exotel (similar to TwiML but for Exotel)
