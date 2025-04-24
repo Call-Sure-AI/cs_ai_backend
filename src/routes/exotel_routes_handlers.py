@@ -258,7 +258,13 @@ async def exotel_audio_stream(
         # Accept the WebSocket connection
         await websocket.accept()
         connected = True
-        
+
+        # Send handshake message immediately after accept
+        await websocket.send_text(json.dumps({
+            "event": "connected",
+            "protocol": "websocket",
+            "version": "1.0.0"
+        }))
         # Get company info from the API key
         if not connection_manager:
             logger.error(f"[{connection_id}] Connection manager not found!")
