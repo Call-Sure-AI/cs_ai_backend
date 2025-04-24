@@ -58,27 +58,33 @@ DEFAULT_COMPANY_API_KEY = getattr(settings, "DEFAULT_COMPANY_API_KEY",
 DEFAULT_AGENT_ID = getattr(settings, "DEFAULT_AGENT_ID", 
                           "48111553-4b98-4f4e-9431-f6ab6cbcfacf")
 
-# Helper function to validate incoming Exotel requests - similar to Twilio validation
-async def validate_exotel_request(request: Request) -> bool:
-    """Validate that the request is coming from Exotel"""
-    # For Exotel, this would typically include checking for an auth token
-    # or signature in the request headers, but implementation may vary
-    try:
-        # Implementation depends on Exotel's authentication mechanism
-        # This is a simplified version - implement properly according to Exotel docs
-        # If Exotel uses a signature system similar to Twilio:
-        logger.info(f"ENV check - EXOTEL_SID: {'Set' if EXOTEL_SID else 'Not set'}")
-        logger.info(f"ENV check - EXOTEL_TOKEN: {'Set' if EXOTEL_TOKEN else 'Not set'}")
-        logger.info(f"ENV check - EXOTEL_API_KEY: {'Set' if EXOTEL_API_KEY else 'Not set'}")
+# # Helper function to validate incoming Exotel requests - similar to Twilio validation
+# async def validate_exotel_request(request: Request) -> bool:
+#     """Validate that the request is coming from Exotel"""
+#     # For Exotel, this would typically include checking for an auth token
+#     # or signature in the request headers, but implementation may vary
+#     try:
+#         # Implementation depends on Exotel's authentication mechanism
+#         # This is a simplified version - implement properly according to Exotel docs
+#         # If Exotel uses a signature system similar to Twilio:
+#         logger.info(f"ENV check - EXOTEL_SID: {'Set' if EXOTEL_SID else 'Not set'}")
+#         logger.info(f"ENV check - EXOTEL_TOKEN: {'Set' if EXOTEL_TOKEN else 'Not set'}")
+#         logger.info(f"ENV check - EXOTEL_API_KEY: {'Set' if EXOTEL_API_KEY else 'Not set'}")
 
-        signature = request.headers.get("X-Exotel-Signature", "")
-        if not signature and EXOTEL_API_KEY:
-            logger.warning(f"Invalid Exotel signature: {signature}")
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Error validating Exotel request: {str(e)}")
-        return False
+#         signature = request.headers.get("X-Exotel-Signature", "")
+#         if not signature and EXOTEL_API_KEY:
+#             logger.warning(f"Invalid Exotel signature: {signature}")
+#             return False
+#         return True
+#     except Exception as e:
+#         logger.error(f"Error validating Exotel request: {str(e)}")
+#         return False
+
+async def validate_exotel_request(request: Request) -> bool:
+    """Temporarily skip Exotel validation — enable real check later if needed"""
+    logger.info("Skipping Exotel request validation for development")
+    return True
+
 
 @router.on_event("startup")
 async def startup_event():
