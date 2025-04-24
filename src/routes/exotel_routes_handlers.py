@@ -124,10 +124,15 @@ async def handle_incoming_call(request: Request):
 
     try:
         # Parse form data from the request
-        form_data = await request.form()
-        call_sid = form_data.get("CallSid", form_data.get("sid", "unknown_call"))
-        caller = form_data.get("From", form_data.get("from", "unknown"))
-        
+        if request.method == "POST":
+            form_data = await request.form()
+            call_sid = form_data.get("CallSid", form_data.get("sid", "unknown_call"))
+            caller = form_data.get("From", form_data.get("from", "unknown"))
+        else:
+            query_params = dict(request.query_params)
+            call_sid = query_params.get("CallSid", query_params.get("sid", "unknown_call"))
+            caller = query_params.get("From", query_params.get("from", "unknown"))
+
         logger.info(f"[EXOTEL_CALL_SETUP] Call SID: {call_sid}, Caller: {caller}")
 
         # Generate unique WebSocket peer ID
