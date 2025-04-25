@@ -6,6 +6,9 @@ import time
 import websockets
 from typing import Dict, Callable, Awaitable, Optional
 import random
+import base64
+import audioop
+
 
 logger = logging.getLogger(__name__)
 
@@ -93,55 +96,37 @@ class DeepgramWebSocketService:
 
         logger.error(f"Could not reconnect to Deepgram for session {session_id}")
 
-    
-    # async def _handle_message(self, session_id: str, message: str):
-    #     try:
-    #         data = json.loads(message)
-    #         message_type = data.get("type")
-    #         logger.info(f"Deepgram message received: {message_type}")
+        
+    async def convert_twilio_audio(self, payload: str, session_id: str) -> bytes:
+        """
+        Convert Twilio's base64 audio format to raw PCM audio for Deepgram.
+        
+        Twilio sends audio as base64-encoded mulaw (G.711) audio at 8kHz.
+        Deepgram expects linear PCM at 16kHz.
+        
+        Args:
+            payload: Base64-encoded mulaw audio from Twilio
+            session_id: Session identifier for logging
             
-    #         if random.random() < 0.1:  # Log ~10% of messages
-    #             logger.info(f"Deepgram full message: {message[:500]}...")
+        Returns:
+            Converted audio bytes ready for Deepgram
+        """
+        try:
+            # Decode base64 encoded payload from Twilio
+            mulaw_audio = base64.b64decode(payload)
             
-
-    #         if message_type == "Results":
-    #             channel = data.get("channel", {})
-    #             alternatives = channel.get("alternatives", [])
-                
-    #             if alternatives:
-    #                 transcript = alternatives[0].get("transcript", "").strip()
-    #                 is_final = data.get("is_final", False)
-    #                 speech_final = data.get("speech_final", False)
-                    
-    #                 logger.info(f"Deepgram transcript: '{transcript}', is_final={is_final}, speech_final={speech_final}")
-                    
-    #                 if transcript and (is_final or speech_final):
-    #                     logger.info(f"Final transcript ({session_id}): '{transcript}'")
-    #                     await self.sessions[session_id]["callback"](session_id, transcript)
-    #                 elif transcript:
-    #                     logger.debug(f"Interim transcript ({session_id}): '{transcript}'")
-    #             else:
-    #                 logger.debug(f"No transcript alternatives received for {session_id}")
-
-    #         elif message_type == "UtteranceEnd":
-    #             logger.info(f"Utterance end detected for {session_id}")
-    #             # Notify that an utterance has ended - this helps with silence detection
-    #             await self.sessions[session_id]["callback"](session_id, "")
-
-    #         elif message_type == "Error":
-    #             error_message = data.get('message', 'Unknown error')
-    #             logger.error(f"Deepgram Error for {session_id}: {error_message}")
-
-    #         elif message_type == "Metadata":
-    #             logger.info(f"Deepgram Metadata received for {session_id}: {json.dumps(data)}")
-
-    #         else:
-    #             logger.debug(f"Unhandled message type '{message_type}' for session {session_id}")
-    #     except Exception as e:
-    #         logger.error(f"Error handling Deepgram message: {str(e)}")
-    #         logger.error(f"Raw message content: {message[:100]}...")
-    
-    # Modify _handle_message in DeepgramWebSocketService class
+            # Convert mulaw to PCM (linear16)
+            pcm_audio = audioop.ulaw2lin(mulaw_audio, 2)  # 2 bytes per sample (16-bit)
+            
+            # Upsample from 8kHz to 16kHz
+            pcm_audio_16k = audioop.ratecv(pcm_audio, 2, 1, 8000, 16000, None)[0]
+            
+            logger.debug(f"Converted {len(mulaw_audio)} bytes of mulaw to {len(pcm_audio_16k)} bytes of PCM")
+            return pcm_audio_16k
+            
+        except Exception as e:
+            logger.error(f"Error converting Twilio audio for {session_id}: {str(e)}")
+            return b''  # Return empty bytes on error    
 
     async def _handle_message(self, session_id: str, message: str):
         try:
