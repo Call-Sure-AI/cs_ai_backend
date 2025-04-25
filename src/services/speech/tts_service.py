@@ -103,7 +103,6 @@ class WebSocketTTSService:
                         
                         # Check for audio chunk
                         if "audio" in data:
-                            # Decode base64 audio
                             audio_base64 = data["audio"]
                             audio_chunks_received += 1
                             
@@ -114,10 +113,12 @@ class WebSocketTTSService:
                             # Use callback if provided
                             if self.audio_callback:
                                 try:
+                                    # The audio is already base64 encoded, so we pass it as is
                                     await self.audio_callback(audio_base64)
                                 except Exception as e:
                                     logger.error(f"Error in audio callback: {str(e)}")
-                            
+                        
+                           
                         # Handle any errors
                         elif "error" in data:
                             logger.error(f"ElevenLabs API error: {data['error']}")
