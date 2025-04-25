@@ -1182,14 +1182,13 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                     }
                     
                     # Send to client if still connected
-                    if not websocket_closed and not websocket.client_disconnected:
-                        try:
-                            await websocket.send_text(json.dumps(media_message))
-                            return True
-                        except Exception as e:
-                            logger.error(f"[{connection_id}] Error sending data to websocket: {str(e)}")
-                            return False
-                    return True
+                    # if not websocket_closed and not websocket.client_disconnected:
+                    try:
+                        await websocket.send_text(json.dumps(media_message))
+                        return True
+                    except Exception as e:
+                        logger.error(f"[{connection_id}] Error sending data to websocket: {str(e)}")
+                        return False
                 except Exception as e:
                     logger.error(f"[{connection_id}] Error sending audio: {str(e)}")
                     return False
