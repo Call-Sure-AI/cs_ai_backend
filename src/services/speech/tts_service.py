@@ -41,6 +41,7 @@ class WebSocketTTSService:
     async def stop_playback(self):
         """Stop current playback and clear the queue"""
         logger.info("Stopping audio playback and clearing queue")
+        self.should_stop_playback.set()
         
         # Clear the queue
         while not self.audio_queue.empty():
@@ -49,7 +50,7 @@ class WebSocketTTSService:
                 self.audio_queue.task_done()
             except asyncio.QueueEmpty:
                 break
-        
+                
         # Also attempt to abort generation via WebSocket if connected
         if self.is_connected and self.ws and not self.ws.closed:
             try:
@@ -61,7 +62,8 @@ class WebSocketTTSService:
                 logger.info("Sent abort message to ElevenLabs")
             except Exception as e:
                 logger.error(f"Error sending abort message: {str(e)}")
-    
+                
+                
     async def _playback_manager(self):
         """Manages playback of audio chunks from the queue"""
         logger.info("Starting audio playback manager")

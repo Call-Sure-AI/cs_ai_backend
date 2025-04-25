@@ -1158,7 +1158,6 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
             if active_tts_service:
                 # Stop any existing TTS service
                 try:
-                    await active_tts_service.stop_playback()
                     await active_tts_service.close()
                 except Exception as e:
                     logger.error(f"[{connection_id}] Error stopping previous TTS: {str(e)}")
@@ -1189,7 +1188,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                 except Exception as e:
                     logger.error(f"[{connection_id}] Error sending audio: {str(e)}")
                     return False
-            
+                
             # Connect to TTS service
             connect_success = await tts_service.connect(send_audio_to_twilio)
             if not connect_success:
@@ -1393,9 +1392,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                             if media_data.get('track') == 'inbound' and 'payload' in media_data:
                                 payload = media_data.get('payload')
                                 
-                                # IMPORTANT: Stop any active TTS immediately when we get audio
-                                if active_tts_service:
-                                    await active_tts_service.stop_playback()
+                                
                                 
                                 # Convert and process the audio
                                 audio_data = await speech_service.convert_twilio_audio(payload, client_id)
