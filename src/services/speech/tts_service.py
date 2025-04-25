@@ -9,8 +9,6 @@ from typing import Optional, AsyncGenerator, Dict, Any, Callable, List
 import io
 import wave
 import audioop
-import tempfile
-import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +103,6 @@ class WebSocketTTSService:
                         
                         # Check for audio chunk
                         if "audio" in data:
-                            # Audio is already base64 encoded from ElevenLabs
                             audio_base64 = data["audio"]
                             audio_chunks_received += 1
                             
@@ -116,17 +113,18 @@ class WebSocketTTSService:
                             # Use callback if provided
                             if self.audio_callback:
                                 try:
-                                    # Pass the base64 string directly to the callback
+                                    # The audio is already base64 encoded, so we pass it as is
                                     await self.audio_callback(audio_base64)
                                 except Exception as e:
                                     logger.error(f"Error in audio callback: {str(e)}")
-                            
+                        
+                           
                         # Handle any errors
                         elif "error" in data:
                             logger.error(f"ElevenLabs API error: {data['error']}")
                             
                     except json.JSONDecodeError:
-                        logger.warning(f"Invalid JSON received")
+                        logger.warning(f"Invalid JSON: {msg.data}")
                     except Exception as e:
                         logger.error(f"Error processing message: {str(e)}")
                 
@@ -146,104 +144,8 @@ class WebSocketTTSService:
             logger.error(f"Critical error in audio listener: {str(e)}")
         finally:
             logger.info("ElevenLabs WebSocket audio listener stopped")
-    
-    
-    async def convert_mp3_to_mulaw(self, audio_base64):
-        """
-        Convert MP3 audio (base64 encoded) to μ-law 8kHz mono format for Twilio
-        
-        Args:
-            audio_base64: Base64 encoded MP3 audio from ElevenLabs
-            
-        Returns:
-            Base64 encoded μ-law audio ready for Twilio
-        """
-        try:
-            # Decode base64 MP3 data
-            mp3_data = base64.b64decode(audio_base64)
-            
-            # Create temporary files
-            mp3_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-            wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            ulaw_file = tempfile.NamedTemporaryFile(suffix=".ulaw", delete=False)
-            
-            mp3_path = mp3_file.name
-            wav_path = wav_file.name
-            ulaw_path = ulaw_file.name
-            
-            # Close the files so we can use them with ffmpeg
-            mp3_file.close()
-            wav_file.close()
-            ulaw_file.close()
-            
-            # Write MP3 data to temp file
-            with open(mp3_path, "wb") as f:
-                f.write(mp3_data)
-            
-            try:
-                # Step 1: Convert MP3 to WAV PCM 16-bit mono 8kHz
-                subprocess.run([
-                    "ffmpeg",
-                    "-i", mp3_path,
-                    "-ar", "8000",       # 8kHz sample rate
-                    "-ac", "1",          # Mono
-                    "-acodec", "pcm_s16le",  # 16-bit PCM
-                    wav_path
-                ], check=True, capture_output=True)
-                
-                # Step 2: Convert WAV to μ-law
-                subprocess.run([
-                    "ffmpeg",
-                    "-i", wav_path,
-                    "-ar", "8000",
-                    "-ac", "1",
-                    "-acodec", "pcm_mulaw",  # μ-law encoding
-                    ulaw_path
-                ], check=True, capture_output=True)
-                
-                # Read μ-law data, skipping WAV header
-                with open(ulaw_path, "rb") as f:
-                    # Skip WAV header (44 bytes)
-                    f.seek(44)
-                    ulaw_data = f.read()
-                
-                # Convert to base64 for Twilio
-                ulaw_base64 = base64.b64encode(ulaw_data).decode("utf-8")
-                return ulaw_base64
-                
-            except (subprocess.SubprocessError, FileNotFoundError) as e:
-                logger.error(f"Error using ffmpeg: {e}")
-                logger.info("Falling back to Python audio conversion")
-                
-                # Fallback using Python libraries if ffmpeg isn't available
-                
-                
-                # This is a simplification and may not work perfectly
-                # For a production system, ensure ffmpeg is installed
-                
-                # Create a simplified μ-law conversion
-                with open(mp3_path, "rb") as f:
-                    pcm_data = f.read()[128:]  # Skip header (approximate)
-                
-                # Convert to mono, resample to 8kHz, then convert to μ-law
-                mono_data = audioop.tomono(pcm_data, 2, 0.5, 0.5)
-                resampled_data = audioop.ratecv(mono_data, 2, 1, 44100, 8000, None)[0]
-                ulaw_data = audioop.lin2ulaw(resampled_data, 2)
-                
-                ulaw_base64 = base64.b64encode(ulaw_data).decode("utf-8")
-                return ulaw_base64
-                
-        except Exception as e:
-            logger.error(f"Error converting MP3 to μ-law: {e}")
-            return None
-        finally:
-            # Clean up temporary files
-            for path in [mp3_path, wav_path, ulaw_path]:
-                try:
-                    if os.path.exists(path):
-                        os.unlink(path)
-                except Exception as e:
-                    logger.error(f"Error cleaning up temp file {path}: {e}")
+
+
 
 
     async def connect(self, audio_callback: Callable[[str], Any] = None):

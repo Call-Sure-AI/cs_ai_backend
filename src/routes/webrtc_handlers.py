@@ -590,15 +590,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             return
         
         # Function to send audio to Twilio
-        async def send_audio_to_twilio(audio_base64, stream_sid, ws):
-            """
-            Send audio to Twilio following the exact Media Streams Protocol
-            
-            Args:
-                audio_base64: Base64 encoded audio from ElevenLabs (MP3 format)
-                stream_sid: The Twilio Stream SID
-                ws: The WebSocket connection to Twilio
-            """
+        async def send_audio_to_twilio(audio_base64):
             try:
                 if not hasattr(send_audio_to_twilio, "chunk_count"):
                     send_audio_to_twilio.chunk_count = 0
@@ -608,34 +600,26 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 if send_audio_to_twilio.chunk_count == 1:
                     logger.info(f"Received first audio chunk from ElevenLabs")
                 
-                # Convert MP3 audio to μ-law format required by Twilio
-                tts_service = WebSocketTTSService()
-                mulaw_base64 = await tts_service.convert_mp3_to_mulaw(audio_base64)
-                
-                if not mulaw_base64:
-                    logger.error("Failed to convert audio to μ-law format")
-                    return False
-                
-                # Construct media message exactly as Twilio expects
+                # Simple, direct approach - exactly what Twilio expects
                 media_message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
-                        "payload": mulaw_base64
+                        "payload": audio_base64
                     }
                 }
                 
-                # Send message as JSON string
+                # Send as JSON text
                 await ws.send_text(json.dumps(media_message))
                 
                 if send_audio_to_twilio.chunk_count == 1:
                     logger.info(f"Sent first audio chunk to Twilio")
                 
                 return True
-                
             except Exception as e:
-                logger.error(f"Error sending audio to Twilio: {e}")
+                logger.error(f"Error sending audio to Twilio: {str(e)}")
                 return False
+        
         
         # Special handling for preset responses to minimize latency
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
