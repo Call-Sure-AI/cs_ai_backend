@@ -619,30 +619,38 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             logger.error(f"No stream SID found for client {client_id}")
             return
         
+        tts_service = WebSocketTTSService()
+        
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_base64):
             try:
-                # Convert MP3 to mulaw
-                mulaw_base64 = await convert_mp3_to_mulaw(audio_base64)
-                if not mulaw_base64:
-                    return False
-                    
-                # Properly format the media message for Twilio
+                # Track chunk count for debugging
+                if not hasattr(send_audio_to_twilio, "chunk_count"):
+                    send_audio_to_twilio.chunk_count = 0
+                
+                send_audio_to_twilio.chunk_count += 1
+                
+                # Format the media message for Twilio
                 media_message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
-                        "payload": mulaw_base64
+                        "payload": audio_base64
                     }
                 }
+                
+                # Log first chunk for debugging
+                if send_audio_to_twilio.chunk_count == 1:
+                    logger.info(f"Sending first audio chunk to Twilio: {len(audio_base64)} bytes")
+                elif send_audio_to_twilio.chunk_count % 10 == 0:
+                    logger.info(f"Sent {send_audio_to_twilio.chunk_count} audio chunks so far")
                 
                 # Send as JSON text
                 await ws.send_text(json.dumps(media_message))
                 return True
             except Exception as e:
-                logger.error(f"Error sending audio to Twilio: {str(e)}")
-                return False
-            
+                logger.error(f"Error sending audio chunk #{send_audio_to_twilio.chunk_count}: {str(e)}")
+                return False   
             
         # Special handling for preset responses to minimize latency
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
@@ -650,7 +658,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             welcome_text = "Hello! Welcome to Callsure AI. I'm your AI voice assistant. How may I help you today?"
             
             # Connect to TTS service
-            tts_service = WebSocketTTSService()
+            
             connect_start = time.time()
             connect_success = await tts_service.connect(send_audio_to_twilio)
             
@@ -672,7 +680,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             fast_response = "Hello! How can I assist you today?"
             
             # Use TTS service for quick response
-            tts_service = WebSocketTTSService()
+            
             await tts_service.connect(send_audio_to_twilio)
             await tts_service.stream_text(fast_response)
             # Wait for audio to process
@@ -683,7 +691,7 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             return fast_response
         
         # Start TTS connection early to minimize latency
-        tts_service = WebSocketTTSService()
+        
         tts_connect_task = asyncio.create_task(tts_service.connect(send_audio_to_twilio))
         
         # Collect the full response for logging
