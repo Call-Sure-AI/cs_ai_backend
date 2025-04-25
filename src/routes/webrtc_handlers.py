@@ -592,34 +592,19 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_base64):
             try:
-                if not hasattr(send_audio_to_twilio, "chunk_count"):
-                    send_audio_to_twilio.chunk_count = 0
-                
-                send_audio_to_twilio.chunk_count += 1
-                
-                if send_audio_to_twilio.chunk_count == 1:
-                    logger.info(f"Received first audio chunk from ElevenLabs")
-                
-                # Simple, direct approach - exactly what Twilio expects
+                # Access stream_sid and ws from the outer scope
                 media_message = {
                     "event": "media",
-                    "streamSid": stream_sid,
+                    "streamSid": stream_sid,  # Use from outer scope
                     "media": {
                         "payload": audio_base64
                     }
                 }
-                
-                # Send as JSON text
-                await ws.send_text(json.dumps(media_message))
-                
-                if send_audio_to_twilio.chunk_count == 1:
-                    logger.info(f"Sent first audio chunk to Twilio")
-                
+                await ws.send_text(json.dumps(media_message))  # Use ws from outer scope
                 return True
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
                 return False
-        
         
         # Special handling for preset responses to minimize latency
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
@@ -629,9 +614,8 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             # Connect to TTS service
             tts_service = WebSocketTTSService()
             connect_start = time.time()
-            connect_success = await tts_service.connect(
-                lambda audio_base64: send_audio_to_twilio(audio_base64, stream_sid, ws)
-            )
+            connect_success = await tts_service.connect(send_audio_to_twilio)
+            
             connect_time = time.time() - connect_start
             logger.info(f"TTS connection established in {connect_time:.2f}s")
             
