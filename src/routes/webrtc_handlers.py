@@ -584,15 +584,20 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             return
 
         # Get the stream SID for sending audio
-        stream_sid = app.state.stream_sids.get(client_id, "")
+        stream_sid = app.state.stream_sids.get(client_id)
         if not stream_sid:
             logger.error(f"No stream SID found for client {client_id}")
             return
         
         # Function to send audio to Twilio
-        async def send_audio_to_twilio(audio_base64):
+        async def send_audio_to_twilio(audio_base64, stream_sid, ws):
             """
-            Send audio to Twilio - handles both bytes and base64 strings
+            Send audio to Twilio following the exact Media Streams Protocol
+            
+            Args:
+                audio_base64: Base64 encoded audio from ElevenLabs (MP3 format)
+                stream_sid: The Twilio Stream SID
+                ws: The WebSocket connection to Twilio
             """
             try:
                 if not hasattr(send_audio_to_twilio, "chunk_count"):
@@ -603,32 +608,34 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 if send_audio_to_twilio.chunk_count == 1:
                     logger.info(f"Received first audio chunk from ElevenLabs")
                 
-                # Make sure we're working with a string
-                if isinstance(audio_base64, bytes):
-                    # If we got bytes, convert to base64 string
-                    encoded_payload = base64.b64encode(audio_base64).decode('utf-8')
-                else:
-                    # If already a string, use as is
-                    encoded_payload = audio_base64
-                    
-                # Build the media message
+                # Convert MP3 audio to μ-law format required by Twilio
+                tts_service = WebSocketTTSService()
+                mulaw_base64 = await tts_service.convert_mp3_to_mulaw(audio_base64)
+                
+                if not mulaw_base64:
+                    logger.error("Failed to convert audio to μ-law format")
+                    return False
+                
+                # Construct media message exactly as Twilio expects
                 media_message = {
                     "event": "media",
                     "streamSid": stream_sid,
-                    "media": {"payload": encoded_payload}
+                    "media": {
+                        "payload": mulaw_base64
+                    }
                 }
                 
-                # Convert to JSON string and send
-                message_json = json.dumps(media_message)
-                await ws.send_text(message_json)
+                # Send message as JSON string
+                await ws.send_text(json.dumps(media_message))
                 
                 if send_audio_to_twilio.chunk_count == 1:
                     logger.info(f"Sent first audio chunk to Twilio")
+                
                 return True
+                
             except Exception as e:
-                logger.error(f"Error sending audio to Twilio: {str(e)}")
+                logger.error(f"Error sending audio to Twilio: {e}")
                 return False
-        
         
         # Special handling for preset responses to minimize latency
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
@@ -638,7 +645,9 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             # Connect to TTS service
             tts_service = WebSocketTTSService()
             connect_start = time.time()
-            connect_success = await tts_service.connect(send_audio_to_twilio)
+            connect_success = await tts_service.connect(
+                lambda audio_base64: send_audio_to_twilio(audio_base64, stream_sid, ws)
+            )
             connect_time = time.time() - connect_start
             logger.info(f"TTS connection established in {connect_time:.2f}s")
             
