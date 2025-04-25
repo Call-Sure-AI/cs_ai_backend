@@ -562,6 +562,36 @@ async def process_message_with_audio_response(manager, peer_id: str, message_dat
         return None
 
 
+import base64
+import audioop
+import io
+from pydub import AudioSegment
+
+async def convert_mp3_to_mulaw(mp3_base64):
+    try:
+        # Decode base64 to binary
+        mp3_data = base64.b64decode(mp3_base64)
+        
+        # Convert MP3 to WAV (16-bit PCM)
+        audio = AudioSegment.from_mp3(io.BytesIO(mp3_data))
+        
+        # Resample to 8000 Hz mono
+        audio = audio.set_frame_rate(8000).set_channels(1)
+        
+        # Convert to raw PCM
+        pcm_data = audio.raw_data
+        
+        # Convert to mulaw
+        mulaw_data = audioop.lin2ulaw(pcm_data, 2)  # 2 bytes per sample (16-bit)
+        
+        # Convert back to base64
+        mulaw_base64 = base64.b64encode(mulaw_data).decode('utf-8')
+        
+        return mulaw_base64
+    except Exception as e:
+        logger.error(f"Error converting MP3 to mulaw: {str(e)}")
+        return None
+
 async def process_buffered_message(manager, client_id, msg_data, app):
     """Process messages with improved latency"""
     try:
@@ -592,23 +622,19 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_base64):
             try:
-                if not hasattr(send_audio_to_twilio, "chunk_count"):
-                    send_audio_to_twilio.chunk_count = 0
-                
-                send_audio_to_twilio.chunk_count += 1
-                
+                # Convert MP3 to mulaw
+                mulaw_base64 = await convert_mp3_to_mulaw(audio_base64)
+                if not mulaw_base64:
+                    return False
+                    
                 # Properly format the media message for Twilio
                 media_message = {
                     "event": "media",
                     "streamSid": stream_sid,
                     "media": {
-                        "payload": audio_base64
+                        "payload": mulaw_base64
                     }
                 }
-                
-                # Log the first chunk for debugging
-                if send_audio_to_twilio.chunk_count == 1:
-                    logger.info(f"Sending first audio chunk to Twilio: {len(audio_base64)} bytes")
                 
                 # Send as JSON text
                 await ws.send_text(json.dumps(media_message))
@@ -616,7 +642,8 @@ async def process_buffered_message(manager, client_id, msg_data, app):
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
                 return False
-        
+            
+            
         # Special handling for preset responses to minimize latency
         if msg_data.get('message') == '__SYSTEM_WELCOME__':
             # Hardcoded welcome message for immediate response
