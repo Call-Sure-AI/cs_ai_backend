@@ -1280,7 +1280,7 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
 
         # Define the transcript callback function for Deepgram
         async def handle_transcription(session_id, transcribed_text):
-            """Handle transcripts from Deepgram"""
+            """Handle transcripts from Deepgram - STOPS audio when new transcript is received"""
             nonlocal active_tts_service
             
             # If empty text is returned, ignore it
@@ -1289,14 +1289,19 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                 
             logger.info(f"[{connection_id}] TRANSCRIBED: '{transcribed_text}'")
             
-            # If we have an active TTS service, stop it immediately when user speaks
+            # THIS IS THE KEY PART: Stop any active TTS when a new transcript is received
             if active_tts_service:
-                logger.info(f"[{connection_id}] User spoke during AI response, stopping TTS")
-                await active_tts_service.stop_playback()
+                logger.info(f"[{connection_id}] New transcript received, stopping current audio response")
+                try:
+                    # Stop playback and clear audio queue
+                    await active_tts_service.stop_playback()
+                except Exception as e:
+                    logger.error(f"[{connection_id}] Error stopping TTS on new transcript: {str(e)}")
             
-            # Process the transcript
+            # Process the new transcript to generate a response
             asyncio.create_task(process_transcript(transcribed_text))
-
+        
+        
         # Initialize Deepgram session
         logger.info(f"[{connection_id}] Initializing Deepgram WebSocket session")
         init_success = await speech_service.initialize_session(client_id, handle_transcription)
@@ -1328,7 +1333,12 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                     
                     # IMPORTANT: Stop any active TTS when we get audio from the user
                     if active_tts_service:
-                        await active_tts_service.stop_playback()
+                        # await active_tts_service.stop_playback()
+                        try:
+                            await active_tts_service.stop_playback()
+                            await active_tts_service.close()
+                        except Exception as e:
+                            logger.error(f"[{connection_id}] Error stopping previous TTS: {str(e)}")
                     
                     # Process the audio for transcription
                     await speech_service.process_audio_chunk(client_id, audio_data)

@@ -41,7 +41,6 @@ class WebSocketTTSService:
     async def stop_playback(self):
         """Stop current playback and clear the queue"""
         logger.info("Stopping audio playback and clearing queue")
-        self.should_stop_playback.set()
         
         # Clear the queue
         while not self.audio_queue.empty():
