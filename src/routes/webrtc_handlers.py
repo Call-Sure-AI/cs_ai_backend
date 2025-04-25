@@ -592,15 +592,26 @@ async def process_buffered_message(manager, client_id, msg_data, app):
         # Function to send audio to Twilio
         async def send_audio_to_twilio(audio_base64):
             try:
-                # Access stream_sid and ws from the outer scope
+                if not hasattr(send_audio_to_twilio, "chunk_count"):
+                    send_audio_to_twilio.chunk_count = 0
+                
+                send_audio_to_twilio.chunk_count += 1
+                
+                # Properly format the media message for Twilio
                 media_message = {
                     "event": "media",
-                    "streamSid": stream_sid,  # Use from outer scope
+                    "streamSid": stream_sid,
                     "media": {
                         "payload": audio_base64
                     }
                 }
-                await ws.send_text(json.dumps(media_message))  # Use ws from outer scope
+                
+                # Log the first chunk for debugging
+                if send_audio_to_twilio.chunk_count == 1:
+                    logger.info(f"Sending first audio chunk to Twilio: {len(audio_base64)} bytes")
+                
+                # Send as JSON text
+                await ws.send_text(json.dumps(media_message))
                 return True
             except Exception as e:
                 logger.error(f"Error sending audio to Twilio: {str(e)}")
