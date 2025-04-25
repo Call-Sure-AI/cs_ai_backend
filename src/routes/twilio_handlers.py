@@ -134,7 +134,7 @@ async def handle_incoming_call(request: Request):
 
         # Get agent ID from settings or use default
         agent_id = getattr(settings, "DEFAULT_AGENT_ID", 
-                          "48111553-4b98-4f4e-9431-f6ab6cbcfacf")
+                          "c995ab37-ce9b-481f-9c70-30671032f81a")
 
         # Construct WebRTC signaling URL
         host = request.headers.get("host") or request.url.netloc
