@@ -630,6 +630,10 @@ async def process_buffered_message(manager, client_id, msg_data, app):
                 
                 send_audio_to_twilio.chunk_count += 1
                 
+                audio_base64 = await convert_mp3_to_mulaw(audio_base64)
+                if not audio_base64:
+                    return False
+                
                 # Format the media message for Twilio
                 media_message = {
                     "event": "media",
