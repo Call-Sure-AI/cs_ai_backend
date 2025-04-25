@@ -1183,7 +1183,12 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                     
                     # Send to client if still connected
                     if not websocket_closed and not websocket.client_disconnected:
-                        await websocket.send_text(json.dumps(media_message))
+                        try:
+                            await websocket.send_text(json.dumps(media_message))
+                            return True
+                        except Exception as e:
+                            logger.error(f"[{connection_id}] Error sending data to websocket: {str(e)}")
+                            return False
                     return True
                 except Exception as e:
                     logger.error(f"[{connection_id}] Error sending audio: {str(e)}")
@@ -1280,10 +1285,15 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
         # Define the transcript callback function for Deepgram
         async def handle_transcription(session_id, transcribed_text):
             """Handle transcripts from Deepgram - STOPS audio when new transcript is received"""
-            nonlocal active_tts_service
+            nonlocal active_tts_service, last_transcript
             
             # If empty text is returned, ignore it
             if not transcribed_text or not transcribed_text.strip():
+                return
+                
+            # Check if this is a new transcript (different from the last one we processed)
+            if transcribed_text.strip() == last_transcript.strip():
+                logger.info(f"[{connection_id}] Same transcript received again, ignoring: '{transcribed_text}'")
                 return
                 
             logger.info(f"[{connection_id}] TRANSCRIBED: '{transcribed_text}'")
@@ -1296,6 +1306,9 @@ async def handle_twilio_media_stream_with_deepgram(websocket: WebSocket, peer_id
                     await active_tts_service.stop_playback()
                 except Exception as e:
                     logger.error(f"[{connection_id}] Error stopping TTS on new transcript: {str(e)}")
+            
+            # Update last transcript
+            last_transcript = transcribed_text.strip()
             
             # Process the new transcript to generate a response
             asyncio.create_task(process_transcript(transcribed_text))
