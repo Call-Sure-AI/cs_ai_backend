@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 import json
 from uuid import UUID
 from json import JSONEncoder
+from services.ticket_service import AutoTicketService
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,8 @@ class ConnectionManager:
         
         self.agent_manager = AgentManager(db_session, self.vector_store)
         self.rag_service = RAGService(self.vector_store)    
-        
+        self.ticket_service = AutoTicketService(db_session)
+
         
         # Connection monitoring
         self.connection_times: Dict[str, datetime] = {}
@@ -521,8 +523,37 @@ class ConnectionManager:
             if not company_info or not websocket:
                 raise ValueError("Invalid connection state")
 
-            # Fetch conversation context
-            conversation = self.client_conversations.get(client_id)
+            try:
+                # Fetch conversation context & After successful AI response, analyze for tickets
+                conversation = self.client_conversations.get(client_id)
+                if conversation:
+                    # Get recent conversation history
+                    recent_messages = await self.agent_manager.get_conversation_context(
+                        conversation['id'], 
+                        max_history=5
+                    )
+                    
+                    # Analyze for ticket creation
+                    ticket_data = await self.ticket_service.analyze_conversation_for_tickets(
+                        conversation['id'], 
+                        recent_messages
+                    )
+                    
+                    if ticket_data:
+                        # Create the ticket
+                        ticket = await self.ticket_service.create_ticket(ticket_data)
+                        logger.info(f"Auto-created ticket {ticket.id} for conversation {conversation['id']}")
+                        
+                        # Optionally notify the client about ticket creation
+                        await self.send_json(websocket, {
+                            "type": "ticket_created",
+                            "ticket_id": ticket.id,
+                            "message": "A support ticket has been automatically created for your inquiry."
+                        })
+            
+            except Exception as e:
+                logger.error(f"Error in ticket analysis: {str(e)}")
+            
             if not conversation:
                 conversation = await self.agent_manager.create_conversation(company_info['id'], client_id)
                 logger.info(f"Created conversation {conversation}") 

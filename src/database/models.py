@@ -7,7 +7,8 @@ from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from datetime import datetime
 import enum
 import uuid
-
+from enum import Enum
+from sqlalchemy import Column, String, Text, DateTime, Enum as SQLEnum, ForeignKey, Boolean, Integer
 
 Base = declarative_base()
 
@@ -74,7 +75,8 @@ class Company(Base):
     documents = relationship("Document", back_populates="company", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="company", cascade="all, delete-orphan")
     calls = relationship("Call", back_populates="company", cascade="all, delete-orphan")
-    
+    tickets = relationship("Ticket", back_populates="company", cascade="all, delete-orphan")
+
     # Add new fields for image handling
     image_storage_limit = Column(Integer, default=10737418240)  # 10GB in bytes
     current_image_storage = Column(Integer, default=0)
@@ -86,6 +88,82 @@ class Company(Base):
         'supported_formats': ['image/jpeg', 'image/png', 'image/gif']
     })
 
+class TicketStatus(str, Enum):
+    NEW = "new"
+    OPEN = "open"
+    IN_PROGRESS = "in_progress"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+
+class TicketPriority(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class TicketSource(str, Enum):
+    EMAIL = "email"
+    PHONE = "phone"
+    CHAT = "chat"
+    WEB_FORM = "web_form"
+    AUTO_GENERATED = "auto_generated"
+
+class Ticket(Base):
+    __tablename__ = 'Ticket'
+    
+    id = Column(String, primary_key=True, default=lambda: f"TKT-{str(uuid.uuid4())[:8].upper()}")
+    company_id = Column(String, ForeignKey('Company.id'), nullable=False)
+    conversation_id = Column(String, ForeignKey('Conversation.id'), nullable=True)
+    customer_id = Column(String, nullable=False)
+    
+    # Ticket Information
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(SQLEnum(TicketStatus), default=TicketStatus.NEW, nullable=False)
+    priority = Column(SQLEnum(TicketPriority), default=TicketPriority.MEDIUM, nullable=False)
+    source = Column(SQLEnum(TicketSource), default=TicketSource.AUTO_GENERATED, nullable=False)
+    
+    # Assignment
+    assigned_to = Column(String, nullable=True)  # Can be agent ID or user email
+    
+    # Customer Information
+    customer_name = Column(String(255), nullable=True)
+    customer_email = Column(String(255), nullable=True)
+    customer_phone = Column(String(50), nullable=True)
+    
+    # Metadata
+    tags = Column(ARRAY(String), default=[])
+    metadata = Column(JSONB, default={})
+    
+    # Auto-resolution tracking
+    auto_resolved = Column(Boolean, default=False)
+    resolution_notes = Column(Text, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    company = relationship("Company", back_populates="tickets")
+    conversation = relationship("Conversation", back_populates="tickets")
+    notes = relationship("TicketNote", back_populates="ticket", cascade="all, delete-orphan")
+
+class TicketNote(Base):
+    __tablename__ = 'TicketNote'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    ticket_id = Column(String, ForeignKey('Ticket.id'), nullable=False)
+    
+    content = Column(Text, nullable=False)
+    author = Column(String(255), nullable=False)  # User email or "System"
+    is_internal = Column(Boolean, default=True)  # Internal notes vs customer-visible
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    ticket = relationship("Ticket", back_populates="notes")
 
 
 class DatabaseIntegration(Base):
@@ -280,6 +358,7 @@ class Conversation(Base):
     company = relationship("Company", back_populates="conversations")
     current_agent = relationship("Agent", back_populates="conversations")
     interactions = relationship("AgentInteraction", back_populates="conversation", cascade="all, delete-orphan")
+    tickets = relationship("Ticket", back_populates="conversation", cascade="all, delete-orphan")
 
 class AgentInteraction(Base):
     __tablename__ = 'AgentInteraction'
