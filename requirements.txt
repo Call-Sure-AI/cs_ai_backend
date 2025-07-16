@@ -81,7 +81,15 @@ langchain-openai
 langchain-community
 langchain
 langchain-core
+langchain-qdrant
 PyPDF2
+
+pydub
+
+Pillow
+twilio
+
+audiooop-lts
 
 chromadb
 
@@ -94,7 +102,7 @@ tenacity>=8.0.0
 pytz>=2024.1
 
 anthropic
-=======
+#=======
 google-auth
 google-auth-oauthlib
 google-auth-httplib2

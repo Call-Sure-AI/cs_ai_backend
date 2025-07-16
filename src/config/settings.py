@@ -323,6 +323,7 @@ class Settings(BaseSettings):
     
     class Config:
         env_file = ".env"
+        extra = "allow"
         
     def model_post_init(self, *args, **kwargs):
         """Post initialization hook to set DATABASE_URL if not provided"""

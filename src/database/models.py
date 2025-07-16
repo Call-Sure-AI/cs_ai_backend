@@ -1,25 +1,24 @@
 # models/models.py
-from sqlalchemy import Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Enum, Table, LargeBinary
+from sqlalchemy import Enum as SQLEnum, Column, String, JSON, ForeignKey, Text, DateTime, Float, Boolean, Integer, Enum, Table, LargeBinary, CheckConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from datetime import datetime
-import enum
 import uuid
 from enum import Enum
 from sqlalchemy import Column, String, Text, DateTime, Enum as SQLEnum, ForeignKey, Boolean, Integer
 
 Base = declarative_base()
 
-class AgentType(str, enum.Enum):
+class AgentType(str, Enum):
     base = "base"
     sales = "sales"
     support = "support"
     technical = "technical"
     custom = "custom"
 
-class DocumentType(str, enum.Enum):
+class DocumentType(str, Enum):
     faq = "faq"
     product = "product"
     policy = "policy"
@@ -28,12 +27,44 @@ class DocumentType(str, enum.Enum):
     image = "image"  # New type for images
 
 
-class DatabaseIntegrationType(str, enum.Enum):
+"""class DatabaseIntegrationType(str, Enum):
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
     MSSQL = "mssql"
     ORACLE = "oracle"
     SQLITE = "sqlite"
+    """
+
+class DatabaseIntegration(Base):
+    __tablename__ = 'DatabaseIntegration'
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String, ForeignKey('Company.id'))
+    name = Column(String(255), nullable=False)
+    
+    # Use string with check constraint instead of enum
+    type = Column(String(50), nullable=False)
+    
+    # Add constraint to ensure only valid values
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('postgresql', 'mysql', 'mssql', 'oracle', 'sqlite')",
+            name='valid_database_type'
+        ),
+    )
+    
+    # Rest of your model remains the same...
+    connection_details = Column(JSONB, nullable=False)
+    schema_mapping = Column(JSONB, default=dict)
+    included_tables = Column(ARRAY(String), default=[])
+    excluded_tables = Column(ARRAY(String), default=[])
+    sync_frequency = Column(String(50), default='daily')
+    last_sync = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    company = relationship("Company", back_populates="database_integrations")
 
 class Company(Base):
     __tablename__ = 'Company'
@@ -133,7 +164,7 @@ class Ticket(Base):
     
     # Metadata
     tags = Column(ARRAY(String), default=[])
-    metadata = Column(JSONB, default={})
+    meta_data = Column(JSONB, default={})
     
     # Auto-resolution tracking
     auto_resolved = Column(Boolean, default=False)
@@ -166,7 +197,7 @@ class TicketNote(Base):
     ticket = relationship("Ticket", back_populates="notes")
 
 
-class DatabaseIntegration(Base):
+"""class DatabaseIntegration(Base):
     __tablename__ = 'DatabaseIntegration'
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -193,6 +224,7 @@ class DatabaseIntegration(Base):
     
     # Relationships
     company = relationship("Company", back_populates="database_integrations")
+    """
 
 class Document(Base):
     __tablename__ = 'Document'
@@ -202,7 +234,7 @@ class Document(Base):
     agent_id = Column(String, ForeignKey('Agent.id'))
     
     name = Column(String(255), nullable=False)
-    type = Column(Enum(DocumentType), nullable=False)
+    type = Column(SQLEnum(DocumentType), nullable=False)
     content = Column(Text, nullable=False)
     
     # File Metadata
@@ -244,7 +276,7 @@ class Agent(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=False)
     name = Column(String(255), nullable=False)
-    type = Column(Enum(AgentType), nullable=False)
+    type = Column(SQLEnum(AgentType), nullable=False)
     company_id = Column(String, ForeignKey('Company.id'))
     
     files = Column(ARRAY(String), default=[])

@@ -791,5 +791,4 @@ async def get_company_agents(company_id: str, db: Session = Depends(get_db)):
         } for agent in agents]
     except Exception as e:
         logger.error(f"Error getting agents: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))-0.
-    .
+        raise HTTPException(status_code=500, detail=str(e))-0
